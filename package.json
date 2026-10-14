@@ -1,0 +1,19 @@
+{
+  "name": "finance-mgr",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev -w @finance-mgr/api\" \"npm run dev -w @finance-mgr/web\"",
+    "build": "npm run build -w @finance-mgr/api && npm run build -w @finance-mgr/web",
+    "test": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "db:migrate": "npm run db:migrate -w @finance-mgr/api",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "concurrently": "^9.1.2",
+    "prettier": "^3.5.3"
+  }
+}
