@@ -10,11 +10,11 @@ Self-hosted personal-finance tracker built with React/Mantine, Fastify, and Post
 4. Apply the schema with `npm run db:migrate`.
 5. Start the API and UI with `npm run dev`.
 
-The UI is available at `http://localhost:5173`; the API liveness check is at `http://localhost:3000/health/live`.
+The UI is available at `http://localhost:8090`; the API liveness check is at `http://localhost:3010/health/live`.
 
 ## Run with Docker
 
-Create `.env` as above, then run `docker compose up --build`. The API runs migrations before startup; the UI is available at `http://localhost:8080`.
+Create `.env` as above, then run `docker compose up --build`. The API runs migrations before startup; the UI is available at `http://localhost:8090`, and the API at `http://localhost:3010`.
 
 ## Verification
 

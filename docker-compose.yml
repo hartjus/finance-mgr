@@ -22,12 +22,13 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://finance:finance@db:5432/finance_mgr
-      WEB_ORIGIN: http://localhost:8080
+      WEB_ORIGIN: http://localhost:8090
+      PORT: 3010
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "3010:3010"
 
   web:
     build:
@@ -36,7 +37,7 @@ services:
     depends_on:
       - api
     ports:
-      - "8080:80"
+      - "8090:80"
 
 volumes:
   postgres-data:

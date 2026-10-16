@@ -10,7 +10,7 @@ const schema = z.object({
   SESSION_SECRET: z.string().min(32),
   ACCOUNT_ENCRYPTION_KEY: z.string().min(40),
   WEB_ORIGIN: z.string().url(),
-  PORT: z.coerce.number().int().positive().default(3000),
+  PORT: z.coerce.number().int().positive().default(3010),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development')
 });
 
