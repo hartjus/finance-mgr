@@ -152,6 +152,10 @@ Implementation exception for ledger history: `/accounts/:id/ledger` uses numbere
 
 Authorization and domain invariants are enforced by services, not solely by the client. Database constraints reinforce critical invariants, including currency, amount direction where applicable, ownership relationships, account membership, and transfer linkage. Inactive accounts retain readable history but cannot receive new transactions, transfers, scheduled transactions, or other balance-affecting updates until reactivated.
 
+## Historical CSV migration
+
+The trusted operator CLI `scripts/import-checkbook.mjs` supports the fixed Checkbook CSV format, separately from the HTTP API and proposed bank-matching workflow. It requires database access, an explicit acting user and target account, active owner/editor membership, dry-run review, and explicit commit/reconciled acknowledgement. It inserts posted historical entries and optionally ordinary categories atomically; deterministic account-scoped source IDs protect unchanged retries. It never modifies existing ledger entries or starting balances. Starred entries are reconciled at import time with the acting user recorded. No new schema is required. See [historical import operations](historical-import.md) for format, limits, backup, and overlap precautions.
+
 ## Backup and export
 
 An administrator-only export flow produces a PostgreSQL `pg_dump` through a controlled application or dedicated backup sidecar process. Exports are recorded with status and expiry, made available through a short-lived authenticated download, and then removed from application storage. Restore workflow and export-at-rest encryption are explicitly deferred for a future release.

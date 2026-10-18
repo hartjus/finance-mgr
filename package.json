@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "workspaces": ["apps/*"],
   "scripts": {
+    "import:checkbook": "node scripts/import-checkbook.mjs",
     "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev -w @finance-mgr/api\" \"npm run dev -w @finance-mgr/web\"",
     "build": "npm run build -w @finance-mgr/api && npm run build -w @finance-mgr/web",
     "test": "vitest run --coverage",

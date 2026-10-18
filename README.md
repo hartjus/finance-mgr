@@ -16,6 +16,10 @@ The UI is available at `http://localhost:8090`; the API liveness check is at `ht
 
 Create `.env` as above, then run `docker compose up --build`. The API runs migrations before startup; the UI is available at `http://localhost:8090`, and the API at `http://localhost:3010`.
 
+## Historical transaction import
+
+Use `npm run import:checkbook -- --help` for the fixed-format CSV importer. It defaults to a dry-run, targets an existing account, and honors `*` reconciliation markers. See [the import guide](docs/historical-import.md) for local/Docker commands, category handling, backups, and starting-balance precautions.
+
 ## Verification
 
 Run `npm run build` for TypeScript and production-build validation. The Playwright core-flow test targets a fresh, running local environment:

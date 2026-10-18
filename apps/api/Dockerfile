@@ -16,5 +16,6 @@ COPY apps/web/package.json apps/web/package.json
 RUN npm install --omit=dev
 COPY --from=build /app/apps/api/dist apps/api/dist
 COPY --from=build /app/apps/api/migrations apps/api/migrations
+COPY scripts/import-checkbook.mjs /app/scripts/import-checkbook.mjs
 WORKDIR /app/apps/api
 CMD ["sh", "-c", "node dist/migrate.js && node dist/server.js"]
