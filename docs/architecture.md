@@ -160,6 +160,12 @@ The transaction locks account/membership and active user-owned category rows, in
 
 The frontend validates all rows before sending a single batch, disables editing while in flight, retains the request ID for unchanged retries within the mounted draft, and clears committed rows before refreshing balances. Retry state is not persisted across page reload or navigation; do not re-enter an uncertain batch without checking history. Existing duplicates from older per-row bulk saves are not removed by this change. See [atomic bulk add](specs/atomic-bulk-add.md) for acceptance and verification.
 
+## Budget & forecast (parallel screen)
+
+The existing Budget editor is retained. `/accounts/:id/forecast/YYYY-MM` opens a separate read-only planning/forecasting view, with `all` as a client aggregation scope. Its authenticated `GET /api/v1/accounts/:id/forecast?month=YYYY-MM` endpoint checks account membership and returns one SQL snapshot of monthly category plans, daily category actuals, and the posted balance at cutoff. Aggregates are not subject to ledger pagination. No schema changes are required.
+
+Income/spending excludes linked transfers and protected system transfer categories, including standalone historical transfers. Posted transfers still affect cash balance. Pending/deleted rows and post-cutoff activity are excluded. Existing plan checkmarks do not change planned amounts. The new view documents its pace-based estimates, uses actuals for completed months and plans for future months, and offers local-only spending-reduction scenarios. Cash estimates are not payment schedules or minimum-balance predictions; future-period cash outlook is withheld because intervening flows are unknown. See [the feature brief and verification](specs/budget-forecast-v2.md).
+
 ## Historical CSV migration
 
 The trusted operator CLI `scripts/import-checkbook.mjs` supports the fixed Checkbook CSV format, separately from the HTTP API and proposed bank-matching workflow. It requires database access, an explicit acting user and target account, active owner/editor membership, dry-run review, and explicit commit/reconciled acknowledgement. It inserts posted historical entries and optionally ordinary categories atomically; deterministic account-scoped source IDs protect unchanged retries. It never modifies existing ledger entries or starting balances. Starred entries are reconciled at import time with the acting user recorded. No new schema is required. See [historical import operations](historical-import.md) for format, limits, backup, and overlap precautions.

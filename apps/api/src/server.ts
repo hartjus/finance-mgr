@@ -211,6 +211,42 @@ app.get('/api/v1/accounts/:accountId/reconciliation', { preHandler: requireUser 
   return { transactions: result.rows };
 });
 
+app.get('/api/v1/accounts/:accountId/forecast', { preHandler: requireUser }, async (request, reply) => {
+  const accountId = z.string().uuid().parse((request.params as { accountId: string }).accountId);
+  const { month } = z.object({ month: z.string().regex(/^(19\d{2}|20\d{2}|21\d{2}|2200)-(0[1-9]|1[0-2])$/) }).parse(request.query);
+  const access = await requireAccount(request, reply, accountId);
+  if (!access || reply.sent) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const [year, number] = month.split('-').map(Number);
+  const end = new Date(Date.UTC(year, number, 0)).toISOString().slice(0, 10);
+  const cutoff = end < today ? end : today;
+  // One snapshot for plan, daily actuals and cash balance. No transaction details exposed.
+  const result = await pool.query(`WITH forecast_plans AS (
+    SELECT l.category_id,c.name AS category_name,l.line_type,sum(m.amount_cents)::text AS amount_cents
+    FROM budget_lines l JOIN budget_line_months m ON m.budget_line_id=l.id
+    JOIN categories c ON c.id=l.category_id
+    WHERE l.account_id=$1 AND l.budget_year=extract(year FROM $2::date)
+      AND m.month=extract(month FROM $2::date) AND l.deleted_at IS NULL AND NOT c.is_system
+    GROUP BY l.category_id,c.name,l.line_type
+  ), forecast_daily AS (
+    SELECT t.category_id,c.name AS category_name,to_char(t.occurred_on,'YYYY-MM-DD') AS date,
+      CASE WHEN t.amount_cents < 0 THEN 'expense' ELSE 'income' END AS line_type,
+      sum(abs(t.amount_cents))::text AS amount_cents
+    FROM transactions t JOIN categories c ON c.id=t.category_id
+    WHERE t.account_id=$1 AND t.status='posted' AND t.deleted_at IS NULL
+      AND t.transfer_id IS NULL AND NOT c.is_system
+      AND t.occurred_on >= $2::date AND t.occurred_on < $2::date + interval '1 month'
+      AND t.occurred_on <= $3::date
+    GROUP BY t.category_id,c.name,t.occurred_on,line_type
+  ) SELECT
+    COALESCE((SELECT json_agg(p ORDER BY p.line_type,p.category_name) FROM forecast_plans p),'[]') AS plans,
+    COALESCE((SELECT json_agg(d ORDER BY d.date,d.category_name) FROM forecast_daily d),'[]') AS daily,
+    (a.starting_balance_cents + COALESCE((SELECT sum(t.amount_cents) FROM transactions t
+      WHERE t.account_id=a.id AND t.status='posted' AND t.deleted_at IS NULL AND t.occurred_on <= $3::date),0))::text AS balance_cents
+    FROM accounts a WHERE a.id=$1`, [accountId, `${month}-01`, cutoff]);
+  return { month, today, cutoff, ...result.rows[0] };
+});
+
 app.get('/api/v1/accounts/:accountId/budget', { preHandler: requireUser }, async (request, reply) => {
   const accountId = z.string().uuid().parse((request.params as { accountId: string }).accountId); if (!await requireAccount(request, reply, accountId)) return;
   const query = z.object({ year: z.coerce.number().int().min(1900).max(2200) }).parse(request.query);

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
 export type AccountScreen =
-  "ledger" | "analysis" | "budget" | "reconcile" | "bulk";
+  "ledger" | "analysis" | "budget" | "forecast" | "reconcile" | "bulk";
 export type SettingsTab = "general" | "categories" | "accounts";
 export function parseRoute(path: string) {
   if (path === "/") return { screen: "home" as const };
   if (path === "/transfer") return { screen: "transfer" as const };
+  const forecast = path.match(/^\/accounts\/([^/]+)\/forecast(?:\/((?:19\d{2}|20\d{2}|21\d{2}|2200)-(?:0[1-9]|1[0-2])))?\/?$/);
+  if (forecast) return { screen: 'forecast' as const, accountId: forecast[1], month: forecast[2] ?? new Date().toISOString().slice(0, 7) };
   const settings = path.match(
     /^\/settings(?:\/(general|categories|accounts))?\/?$/,
   );

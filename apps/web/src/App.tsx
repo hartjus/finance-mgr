@@ -8,6 +8,7 @@ import {
 } from "react";
 import { useRoute } from "./routing";
 import { Home, Settings } from "./screens";
+import { ForecastScreen } from "./ForecastScreen";
 import {
   ActionIcon,
   AppShell,
@@ -41,6 +42,7 @@ import {
 import {
   IconArrowsLeftRight,
   IconChartBar,
+  IconChartLine,
   IconCheck,
   IconChevronLeft,
   IconChevronRight,
@@ -2803,7 +2805,7 @@ export function App({
     return () => window.removeEventListener("beforeunload", warn);
   }, [bulkDirty]);
   const selected =
-    route.screen === "budget" && route.accountId === "all"
+    (route.screen === "budget" || route.screen === "forecast") && route.accountId === "all"
       ? accounts[0]
       : accounts.find((a) => a.id === route.accountId);
   const fallback = selected ?? accounts.find((a) => a.is_active) ?? accounts[0];
@@ -2912,6 +2914,8 @@ export function App({
           onAccountChange={changeAccount}
         />
       );
+    else if (route.screen === "forecast")
+      content = <ForecastScreen accounts={accounts} scopeId={route.accountId!} month={route.month!} navigate={go} />;
     else if (route.screen === "budget")
       content = (
         <Budget
@@ -3003,6 +3007,7 @@ export function App({
           {nav("Reconcile", accountPath("reconcile"), <IconCheck size={18} />)}
           {nav("Xfer Funds", "/transfer", <IconArrowsLeftRight size={18} />)}
           {nav("Budget", accountPath("budget"), <IconReportMoney size={18} />)}
+          {nav("Budget & forecast", accountPath(`forecast/${route.screen === 'forecast' ? route.month : new Date().toISOString().slice(0, 7)}`, route.screen === 'forecast' ? route.accountId : fallback?.id), <IconChartLine size={18} />)}
           {nav("Analysis", accountPath("analysis"), <IconChartBar size={18} />)}
           {nav("Settings", "/settings/general", <IconSettings size={18} />)}
         </Stack>

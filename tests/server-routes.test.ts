@@ -46,6 +46,38 @@ describe('Fastify API routes', () => {
     expect((await request('/api/v1/auth/setup-status')).json()).toEqual({ setupRequired: true });
   });
 
+  it('authenticates and validates the read-only forecast endpoint', async () => {
+    const path = `/api/v1/accounts/${accountId}/forecast`;
+    expect((await request(`${path}?month=2026-10`)).statusCode).toBe(401);
+    state.authenticated = true;
+    for (const month of ['', '2026-13', '2026-00', '2026-1', '1800-01', '2026-10-01']) {
+      expect((await authenticated(`${path}?month=${month}`)).statusCode).toBe(422);
+    }
+    expect((await authenticated('/api/v1/accounts/not-an-id/forecast?month=2026-10')).statusCode).toBe(422);
+  });
+
+  it('denies forecast reads without membership but allows read-only viewers', async () => {
+    state.authenticated = true;
+    const path = `/api/v1/accounts/${accountId}/forecast?month=2026-10`;
+    pool.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+    expect((await authenticated(path)).statusCode).toBe(404);
+    expect(state.queries.some(sql => sql.includes('WITH forecast_plans'))).toBe(false);
+    pool.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ permission: 'viewer', is_active: false }] } as never);
+    pool.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ plans: [], daily: [], balance_cents: '12345' }] } as never);
+    const result = await authenticated(path);
+    expect(result.statusCode).toBe(200);
+    expect(result.json()).toMatchObject({ month: '2026-10', balance_cents: '12345', plans: [], daily: [] });
+    const [sql, params] = pool.query.mock.calls.at(-1)! as unknown as [string, unknown[]];
+    expect(sql).toContain('WITH forecast_plans');
+    expect(sql).toContain("t.status='posted'");
+    expect(sql).toContain('t.deleted_at IS NULL');
+    expect(sql).toContain('t.transfer_id IS NULL AND NOT c.is_system');
+    expect(sql).toContain('l.deleted_at IS NULL AND NOT c.is_system');
+    expect(sql).not.toContain('checked_at');
+    expect(sql).not.toMatch(/INSERT|UPDATE|DELETE/);
+    expect(params.slice(0, 2)).toEqual([accountId, '2026-10-01']);
+  });
+
   it('rejects protected routes without a session', async () => {
     const response = await request('/api/v1/accounts');
     expect(response.statusCode).toBe(401);
