@@ -1,4 +1,4 @@
-// Implemented PostgreSQL schema, through 002_budget_plans.sql.
+// Implemented PostgreSQL schema, through 003_forecast_methods.sql.
 // Sources: apps/api/migrations/*.sql and apps/api/src/migrate.ts.
 // Describes a database with all repository migrations applied; not a live DB dump.
 // docs/data-model.dbml is the separate candidate/design model.
@@ -199,7 +199,20 @@ Table budget_line_months {
   }
 }
 
+Table account_category_forecast_methods {
+  account_id uuid [not null]
+  category_id uuid [not null]
+  method text [not null, default: 'fixed', note: 'CHECK (method IN (\'fixed\', \'variable\'))']
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (account_id, category_id) [pk]
+  }
+}
+
 // Unspecified referential actions in the SQL migrations use PostgreSQL NO ACTION.
+Ref: account_category_forecast_methods.account_id > accounts.id [delete: cascade, update: no action]
+Ref: account_category_forecast_methods.category_id > categories.id [delete: cascade, update: no action]
 Ref: sessions.user_id > users.id [delete: cascade, update: no action]
 Ref: idempotency_keys.user_id > users.id [delete: cascade, update: no action]
 Ref: accounts.owner_user_id > users.id [delete: no action, update: no action]

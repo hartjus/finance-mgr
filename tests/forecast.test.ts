@@ -17,6 +17,7 @@ const sample = (overrides: Partial<ForecastData> = {}): ForecastData => ({
   today: "2026-10-10",
   cutoff: "2026-10-10",
   balance_cents: "200000",
+  methods: [{ category_id: "food", method: "variable" }],
   plans: [
     { ...expense, amount_cents: "30000" },
     { ...income, amount_cents: "100000" },
@@ -87,6 +88,7 @@ describe("forecast calculations", () => {
   it("includes unbudgeted and plan-only categories and aggregates accounts once", () => {
     const other = sample({
       plans: [],
+      methods: [{ category_id: "unplanned", method: "variable" }],
       daily: [
         {
           ...expense,
@@ -121,5 +123,89 @@ describe("forecast calculations", () => {
       month: "2026-10",
     });
     expect(parseRoute("/accounts/all/forecast/2026-13").screen).toBe("missing");
+  });
+
+  it("defaults to Fixed and never paces fixed or unbudgeted expenses", () => {
+    const fixed = sample({ methods: [] });
+    expect(
+      calculateForecast([fixed]).rows.find((row) => row.id === "food"),
+    ).toMatchObject({ method: "fixed", forecast: 30000 });
+    expect(
+      calculateForecast([sample({ methods: undefined, plans: [] })]).expenses
+        .forecast,
+    ).toBe(20000);
+    const over = sample({
+      methods: [],
+      daily: [{ ...expense, date: "2026-10-02", amount_cents: "47500" }],
+    });
+    expect(calculateForecast([over]).expenses.forecast).toBe(47500);
+    expect(
+      calculateForecast([sample({ ...over, daily: [] })]).expenses.forecast,
+    ).toBe(30000);
+  });
+
+  it("calculates mixed methods per account before aggregating matching categories", () => {
+    const fixed = sample({
+      methods: [],
+      plans: [{ ...expense, amount_cents: "45000" }],
+      daily: [{ ...expense, date: "2026-10-01", amount_cents: "45000" }],
+    });
+    const result = calculateForecast([fixed, sample()]);
+    expect(result.rows.find((row) => row.id === "food")).toMatchObject({
+      method: "mixed",
+      plan: 75000,
+      actual: 65000,
+      forecast: 107000,
+    });
+    expect(result.expenses.forecast).toBe(107000);
+    expect(result.points[31].forecast).toBe(107000);
+    expect(result.closingBalance).toBe(408000);
+    // Even identical methods must apply their per-account floor before summing.
+    const under = sample({ methods: [], daily: [] });
+    const over = sample({
+      methods: [],
+      plans: [],
+      daily: [{ ...expense, date: "2026-10-02", amount_cents: "50000" }],
+    });
+    expect(calculateForecast([under, over]).expenses.forecast).toBe(80000);
+    expect(calculateForecast([under, over]).rows[0].method).toBe("fixed");
+  });
+
+  it.each(["fixed", "variable"] as const)(
+    "preserves income and period rules with %s expenses",
+    (method) => {
+      const data = sample({
+        methods: [
+          { category_id: "food", method },
+          { category_id: "pay", method: "variable" },
+        ],
+      });
+      expect(calculateForecast([data]).income.forecast).toBe(100000);
+      expect(
+        calculateForecast([{ ...data, today: "2026-11-01" }]).expenses.forecast,
+      ).toBe(20000);
+      expect(
+        calculateForecast([{ ...data, today: "2026-10-31" }]).expenses.forecast,
+      ).toBe(20000);
+      expect(
+        calculateForecast([{ ...data, today: "2026-09-01", daily: [] }])
+          .expenses.forecast,
+      ).toBe(30000);
+    },
+  );
+  it("preserves the existing income formula when combining accounts", () => {
+    const one = sample({
+      plans: [{ ...income, amount_cents: "100000" }],
+      daily: [{ ...income, date: "2026-10-01", amount_cents: "150000" }],
+    });
+    const two = sample({
+      plans: [{ ...income, amount_cents: "100000" }],
+      daily: [],
+    });
+    expect(calculateForecast([one, two]).income).toEqual({
+      plan: 200000,
+      actual: 150000,
+      forecast: 200000,
+    });
   });
 });

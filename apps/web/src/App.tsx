@@ -1258,7 +1258,26 @@ function Budget({
   const [newCategory, setNewCategory] = useState<string | null>(null);
   const [deletingLine, setDeletingLine] = useState<BudgetLine | null>(null);
   const [error, setError] = useState("");
+  const [loadingBudget, setLoadingBudget] = useState(true);
+  const [budgetBusy, setBudgetBusy] = useState(false);
+  const [pendingSaves, setPendingSaves] = useState(0);
+  const [copyYearOpen, setCopyYearOpen] = useState(false);
+  const [budgetNotice, setBudgetNotice] = useState('');
+  const budgetBusyRef = useRef(false);
+  const saveQueue = useRef(Promise.resolve());
+  const saveFailed = useRef(false);
+  const loadRequest = useRef(0);
+  const budgetMounted = useRef(true);
+  const budgetScope = useRef({ id: budgetAccountId, year });
+  budgetScope.current = { id: budgetAccountId, year };
+  const canWriteBudget = budgetAccountId !== 'all' && account.is_active && account.permission !== 'viewer';
+  const budgetDisabled = !canWriteBudget || budgetBusy || loadingBudget || saveFailed.current;
+  useEffect(() => { budgetMounted.current = true; return () => { budgetMounted.current = false; }; }, []);
   const load = async () => {
+    if (!budgetMounted.current) return;
+    const request = ++loadRequest.current;
+    const isCurrent = () => budgetMounted.current && request === loadRequest.current && budgetScope.current.id === budgetAccountId && budgetScope.current.year === year;
+    setLoadingBudget(true);
     try {
       const ids =
         budgetAccountId === "all"
@@ -1271,15 +1290,40 @@ function Budget({
           ),
         ),
       );
-      setLines(results.flatMap((result) => result.lines));
-      setActuals(results.flatMap((result) => result.actuals));
+      if (isCurrent()) {
+        setLines(results.flatMap((result) => result.lines));
+        setActuals(results.flatMap((result) => result.actuals));
+        saveFailed.current = false;
+        setError('');
+      }
     } catch (err) {
-      setError((err as Error).message);
+      if (isCurrent()) { saveFailed.current = true; setError((err as Error).message); }
+    } finally {
+      if (isCurrent()) setLoadingBudget(false);
     }
   };
   useEffect(() => {
+    setLines([]);
+    setActuals([]);
     void load();
   }, [budgetAccountId, year, accounts.length]);
+  const runBudgetAction = async (work: () => Promise<void>, allowFailed = false) => {
+    if (budgetBusyRef.current) return;
+    budgetBusyRef.current = true;
+    setBudgetBusy(true);
+    setError('');
+    setBudgetNotice('');
+    try {
+      await saveQueue.current;
+      if (saveFailed.current && !allowFailed) throw new Error('An amount could not be saved. Reload the saved budget and re-enter the change before copying.');
+      await work();
+    } catch (err) {
+      if (budgetMounted.current) setError((err as Error).message);
+    } finally {
+      budgetBusyRef.current = false;
+      if (budgetMounted.current) setBudgetBusy(false);
+    }
+  };
   const addLine = async () => {
     try {
       if (budgetAccountId === "all")
@@ -1332,11 +1376,17 @@ function Budget({
     checked: boolean,
   ) => {
     const cents = Math.max(0, Math.round((Number(amount) || 0) * 100));
-    await api(`/budget-lines/${line.id}/months`, {
-      method: "PATCH",
-      body: JSON.stringify({ month, amountCents: cents, checked }),
-    });
-    await load();
+    setPendingSaves(count => count + 1);
+    saveQueue.current = saveQueue.current.then(async () => {
+      if (saveFailed.current) return;
+      await api(`/budget-lines/${line.id}/months`, {
+        method: "PATCH", body: JSON.stringify({ month, amountCents: cents, checked }),
+      });
+    }).catch(err => {
+      saveFailed.current = true;
+      if (budgetMounted.current) setError(`Amount was not saved: ${err.message}. Reload the saved budget before continuing.`);
+    }).finally(() => { if (budgetMounted.current) setPendingSaves(count => count - 1); });
+    await saveQueue.current;
   };
   const replicate = async (line: BudgetLine) => {
     const month = line.months.find((item) => item.month === currentMonth);
@@ -1391,6 +1441,14 @@ function Budget({
                 <Text size="xs" c="dimmed">
                   {line.category_name}
                 </Text>
+                <Tooltip label="Replace February–December amounts with January; keep entered checkmarks">
+                  <Button size="compact-xs" variant="subtle" mt={4}
+                    aria-label={`Copy January for ${line.name}`} disabled={budgetDisabled}
+                    onClick={() => void runBudgetAction(async () => {
+                      await api(`/budget-lines/${line.id}/copy-january`, { method: 'POST' });
+                      await load();
+                    })}>Copy January</Button>
+                </Tooltip>
               </Table.Td>
               {line.months.map((month) => (
                 <Table.Td
@@ -1414,6 +1472,8 @@ function Budget({
                   >
                     <NumberInput
                       value={Number(month.amount_cents) / 100}
+                      aria-label={`${line.name} month ${month.month} amount`}
+                      disabled={budgetDisabled}
                       decimalScale={2}
                       fixedDecimalScale
                       hideControls
@@ -1434,6 +1494,7 @@ function Budget({
                     <input
                       aria-label={`Mark ${line.name} month ${month.month} entered`}
                       type="checkbox"
+                      disabled={budgetDisabled}
                       checked={Boolean(month.checked_at)}
                       onChange={(event) => {
                         const checked = event.currentTarget.checked;
@@ -1476,7 +1537,8 @@ function Budget({
                     <ActionIcon
                       aria-label={`Copy current month for ${line.name}`}
                       variant="subtle"
-                      onClick={() => void replicate(line)}
+                      disabled={budgetDisabled}
+                      onClick={() => void runBudgetAction(() => replicate(line))}
                     >
                       <IconCopy size={16} />
                     </ActionIcon>
@@ -1484,6 +1546,7 @@ function Budget({
                   <Tooltip label="Delete budget line">
                     <ActionIcon
                       aria-label={`Delete ${line.name}`}
+                      disabled={budgetDisabled}
                       color="red"
                       variant="subtle"
                       onClick={() => setDeletingLine(line)}
@@ -1629,10 +1692,9 @@ function Budget({
     }
     return cumulative;
   });
-  const years = Array.from({ length: 11 }, (_, index) => ({
-    value: String(currentYear - 5 + index),
-    label: String(currentYear - 5 + index),
-  }));
+  const years = [...new Set([...Array.from({ length: 11 }, (_, index) => currentYear - 5 + index), year])]
+    .filter(value => value >= 1900 && value <= 2200).sort((a,b) => a-b)
+    .map(value => ({ value: String(value), label: String(value) }));
   const budgetCategories = (type: "income" | "expense") =>
     categories.filter(
       (category) =>
@@ -1814,6 +1876,7 @@ function Budget({
                 })),
               ]}
               value={budgetAccountId}
+              disabled={budgetBusy || pendingSaves > 0}
               onChange={(value) => value && onAccountChange(value)}
               searchable
               w={220}
@@ -1822,11 +1885,19 @@ function Budget({
               label="Year"
               data={years}
               value={String(year)}
-              onChange={(value) => value && setYear(Number(value))}
+              disabled={budgetBusy || pendingSaves > 0}
+              onChange={(value) => { if (value) { setBudgetNotice(''); setYear(Number(value)); } }}
               w={130}
             />
+            <Button variant="light" leftSection={<IconCopy size={16} />}
+              disabled={budgetDisabled || lines.length === 0 || year >= 2200}
+              onClick={() => setCopyYearOpen(true)}>Copy to {year + 1}</Button>
           </Group>
         </Group>
+        {budgetAccountId === 'all' && <Text size="sm" c="dimmed">Select one account to edit or copy its budget.</Text>}
+        {budgetNotice && <Text role="status" c="teal">{budgetNotice}</Text>}
+        {loadingBudget && <Text role="status">Loading budget…</Text>}
+        {error && <Group><Text role="alert" c="red">{error}</Text><Button variant="light" disabled={budgetBusy || loadingBudget} onClick={() => void runBudgetAction(load, true)}>Reload saved budget</Button></Group>}
         <Card withBorder>
           <Group align="end">
             <Select
@@ -1858,11 +1929,8 @@ function Budget({
               searchable
               w={200}
             />
-            <Button onClick={() => void addLine()}>Add line</Button>
+            <Button disabled={budgetDisabled} onClick={() => void runBudgetAction(addLine)}>Add line</Button>
           </Group>
-          <Text c="red" size="sm">
-            {error}
-          </Text>
         </Card>
         <Card
           withBorder
@@ -1985,6 +2053,32 @@ function Budget({
           </ResponsiveContainer>
         </Card>
         <Modal
+          opened={copyYearOpen}
+          onClose={() => { if (!budgetBusy) setCopyYearOpen(false); }}
+          title="Copy budget to next year"
+          centered
+          closeOnClickOutside={!budgetBusy}
+          closeOnEscape={!budgetBusy}
+          withCloseButton={!budgetBusy}
+        >
+          <Stack>
+            <Text>Copy all {lines.length} income and expense lines for {account.name} from {year} to {year + 1}?</Text>
+            <Text size="sm">Names, categories and all twelve monthly amounts will be copied. Entered checkmarks will be reset. If {year + 1} already has budget lines, nothing will be copied or overwritten.</Text>
+            {error && <Text c="red">{error}</Text>}
+            <Group justify="flex-end">
+              <Button variant="default" disabled={budgetBusy} onClick={() => setCopyYearOpen(false)}>Cancel</Button>
+              <Button loading={budgetBusy} onClick={() => void runBudgetAction(async () => {
+                const result = await api<{ targetYear: number; copiedCount: number }>(`/accounts/${budgetAccountId}/budget/copy-next-year`, {
+                  method: 'POST', body: JSON.stringify({ sourceYear: year, confirmed: true }),
+                });
+                setCopyYearOpen(false);
+                setBudgetNotice(`Copied ${result.copiedCount} lines to ${result.targetYear}. Entered checkmarks have been reset.`);
+                setYear(result.targetYear);
+              })}>Confirm copy to {year + 1}</Button>
+            </Group>
+          </Stack>
+        </Modal>
+        <Modal
           opened={Boolean(deletingLine)}
           onClose={() => setDeletingLine(null)}
           title="Delete budget line"
@@ -1999,7 +2093,7 @@ function Budget({
               <Button variant="default" onClick={() => setDeletingLine(null)}>
                 Cancel
               </Button>
-              <Button color="red" onClick={() => void deleteLine()}>
+              <Button color="red" loading={budgetBusy} onClick={() => void runBudgetAction(deleteLine)}>
                 Delete budget line
               </Button>
             </Group>
@@ -2915,7 +3009,7 @@ export function App({
         />
       );
     else if (route.screen === "forecast")
-      content = <ForecastScreen accounts={accounts} scopeId={route.accountId!} month={route.month!} navigate={go} />;
+      content = <ForecastScreen key={`${route.accountId}/${route.month}`} accounts={accounts} scopeId={route.accountId!} month={route.month!} navigate={go} />;
     else if (route.screen === "budget")
       content = (
         <Budget

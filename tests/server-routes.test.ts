@@ -13,6 +13,7 @@ const pool = vi.hoisted(() => ({
     if (sql.includes('WITH ledger AS')) return { rowCount: 1, rows: [{ transactions: [], page: 1, total_items: '0', total_pages: 1 }] };
     if (sql.includes('SELECT 1')) return { rowCount: 1, rows: [{ '?column?': 1 }] };
     if (sql.includes('FROM account_memberships')) return { rowCount: 1, rows: [{ permission: 'owner', is_active: true }] };
+    if (sql.includes('SELECT a.is_active,m.permission')) return { rowCount: 1, rows: [{ permission: 'owner', is_active: true }] };
     if (sql.includes('FROM categories WHERE id=')) return { rowCount: 1, rows: [{ is_system: false }] };
     if (sql.includes('FROM budget_lines')) return { rowCount: 1, rows: [{ id: lineId, account_id: accountId }] };
     if (sql.includes('INSERT INTO categories')) return { rowCount: 1, rows: [{ id: categoryId, name: 'Meals', is_archived: false, is_system: false }] };
@@ -35,6 +36,7 @@ describe('Fastify API routes', () => {
     state.authenticated = false;
     state.queries.length = 0;
     vi.clearAllMocks();
+    pool.connect.mockResolvedValue({ query: pool.query, release: vi.fn() });
   });
 
   const request = (path: string, options: Parameters<typeof app.inject>[0] = {}) => app.inject({ ...options, url: path });
@@ -84,6 +86,44 @@ describe('Fastify API routes', () => {
     expect(response.json()).toMatchObject({ code: 'UNAUTHORIZED' });
   });
 
+  it('validates forecast preference writes including bodyless requests', async () => {
+    const path = `/api/v1/accounts/${accountId}/forecast-methods/${categoryId}`;
+    expect((await request(path, { method: 'PUT', payload: { method: 'fixed' } })).statusCode).toBe(401);
+    state.authenticated = true;
+    for (const payload of [undefined, {}, { method: 'unknown' }, { method: 'fixed', extra: true }]) {
+      expect((await authenticated(path, { method: 'PUT', payload })).statusCode).toBe(422);
+    }
+    expect((await authenticated(`/api/v1/accounts/${accountId}/forecast-methods/invalid`, { method: 'PUT', payload: { method: 'fixed' } })).statusCode).toBe(422);
+    expect((await authenticated(`/api/v1/accounts/invalid/forecast-methods/${categoryId}`, { method: 'PUT', payload: { method: 'fixed' } })).statusCode).toBe(422);
+    expect(pool.query).not.toHaveBeenCalled();
+  });
+
+  it('denies forecast preference writes for nonmembers, viewers and inactive accounts', async () => {
+    state.authenticated = true;
+    const path = `/api/v1/accounts/${accountId}/forecast-methods/${categoryId}`;
+    for (const [rows, status] of [[[], 404], [[{ permission: 'viewer', is_active: true }], 403], [[{ permission: 'owner', is_active: false }], 403]] as const) {
+      pool.query.mockResolvedValueOnce({ rowCount: rows.length, rows } as never);
+      expect((await authenticated(path, { method: 'PUT', payload: { method: 'variable' } })).statusCode).toBe(status);
+    }
+    expect(pool.query).toHaveBeenCalledTimes(3);
+  });
+
+  it('persists fixed/variable for editors and rejects unavailable categories', async () => {
+    state.authenticated = true;
+    const path = `/api/v1/accounts/${accountId}/forecast-methods/${categoryId}`;
+    for (const method of ['fixed', 'variable']) {
+      pool.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ permission: 'editor', is_active: true }] } as never);
+      pool.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ category_id: categoryId, method }] } as never);
+      const response = await authenticated(path, { method: 'PUT', payload: { method } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ category_id: categoryId, method });
+      expect(pool.query).toHaveBeenLastCalledWith(expect.stringContaining('INSERT INTO account_category_forecast_methods'), [accountId, categoryId, user.id, method]);
+    }
+    pool.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ permission: 'owner', is_active: true }] } as never);
+    pool.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+    expect((await authenticated(path, { method: 'PUT', payload: { method: 'variable' } })).statusCode).toBe(404);
+  });
+
   it('restricts account settings to the owner and validates changes', async () => {
     const url = `/api/v1/accounts/${accountId}`;
     expect((await request(url, { method: 'PATCH', payload: { name: 'Daily' } })).statusCode).toBe(401);
@@ -124,6 +164,40 @@ describe('Fastify API routes', () => {
     const response = await authenticated(`/api/v1/budget-lines/${lineId}`, { method: 'DELETE' });
     expect(response.statusCode).toBe(204);
     expect(state.queries.some((query) => query.includes('UPDATE budget_lines SET deleted_at'))).toBe(true);
+  });
+
+  it('validates budget copying and requires authentication and confirmation', async () => {
+    const url = `/api/v1/accounts/${accountId}/budget/copy-next-year`;
+    expect((await request(url, { method: 'POST', payload: { sourceYear: 2026, confirmed: true } })).statusCode).toBe(401);
+    expect((await request(`/api/v1/budget-lines/${lineId}/copy-january`, { method: 'POST' })).statusCode).toBe(401);
+    state.authenticated = true;
+    for (const payload of [undefined, {}, { sourceYear: 2026 }, { sourceYear: 2026, confirmed: false }, { sourceYear: 2200, confirmed: true }]) {
+      expect((await authenticated(url, { method: 'POST', payload })).statusCode).toBe(422);
+    }
+    expect((await authenticated('/api/v1/budget-lines/invalid/copy-january', { method: 'POST' })).statusCode).toBe(422);
+    expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it('supports bodyless January copy and returns year-copy metadata', async () => {
+    state.authenticated = true;
+    const query = vi.fn(async (sql: string) => {
+      if (sql.startsWith('SELECT account_id')) return { rowCount: 1, rows: [{ account_id: accountId }] };
+      if (sql.includes('SELECT a.is_active')) return { rowCount: 1, rows: [{ permission: 'owner', is_active: true }] };
+      if (sql.startsWith('SELECT id')) return { rowCount: 1, rows: [{ id: lineId }] };
+      if (sql.startsWith('SELECT amount_cents')) return { rowCount: 1, rows: [{ amount_cents: '12345' }] };
+      return { rowCount: 0, rows: [] };
+    });
+    const release = vi.fn();
+    pool.connect.mockResolvedValueOnce({ query, release });
+    expect((await authenticated(`/api/v1/budget-lines/${lineId}/copy-january`, { method: 'POST' })).statusCode).toBe(204);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('generate_series(2,12)'), [lineId,'12345']);
+    expect(release).toHaveBeenCalled();
+    const copyQuery = vi.fn().mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rowCount: 1, rows: [{ permission: 'editor', is_active: true }] })
+      .mockResolvedValueOnce({ rowCount: 0 }).mockResolvedValueOnce({ rowCount: 1 }).mockResolvedValueOnce({ rows: [{ copied_count: 2 }] }).mockResolvedValue({ rows: [] });
+    pool.connect.mockResolvedValueOnce({ query: copyQuery, release });
+    const result = await authenticated(`/api/v1/accounts/${accountId}/budget/copy-next-year`, { method: 'POST', payload: { sourceYear: 2026, confirmed: true } });
+    expect(result.statusCode).toBe(201);
+    expect(result.json()).toEqual({ sourceYear: 2026, targetYear: 2027, copiedCount: 2 });
   });
 
   it('returns consistent validation errors for malformed route identifiers', async () => {

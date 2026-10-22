@@ -1,3 +1,4 @@
+export type ForecastMethod = "fixed" | "variable";
 export type ForecastAmount = {
   category_id: string;
   category_name: string;
@@ -11,6 +12,17 @@ export type ForecastData = {
   balance_cents: string;
   plans: ForecastAmount[];
   daily: (ForecastAmount & { date: string })[];
+  methods?: { category_id: string; method: ForecastMethod }[];
+};
+
+type ForecastRow = {
+  id: string;
+  name: string;
+  type: "income" | "expense";
+  plan: number;
+  actual: number;
+  forecast: number;
+  method: ForecastMethod | "mixed";
 };
 
 export function calculateForecast(data: ForecastData[]) {
@@ -29,53 +41,71 @@ export function calculateForecast(data: ForecastData[]) {
       : period === "future"
         ? 0
         : Number(today.slice(8, 10));
-  const categories = new Map<
-    string,
-    {
-      id: string;
-      name: string;
-      type: "income" | "expense";
-      plan: number;
-      actual: number;
-      forecast: number;
-    }
-  >();
+  const categories = new Map<string, ForecastRow>();
   const daily = Array.from({ length: days + 1 }, () => 0);
   for (const account of data) {
+    const accountCategories = new Map<string, ForecastRow>();
+    const methods = new Map(
+      account.methods?.map((item) => [item.category_id, item.method]),
+    );
     for (const [kind, rows] of [
       ["plan", account.plans],
       ["actual", account.daily],
     ] as const) {
       for (const row of rows) {
         const key = `${row.line_type}:${row.category_id}`;
-        const entry = categories.get(key) ?? {
+        const entry = accountCategories.get(key) ?? {
           id: row.category_id,
           name: row.category_name,
           type: row.line_type,
           plan: 0,
           actual: 0,
           forecast: 0,
+          method:
+            row.line_type === "expense"
+              ? (methods.get(row.category_id) ?? "fixed")
+              : "fixed",
         };
         entry[kind] += Number(row.amount_cents);
-        categories.set(key, entry);
+        accountCategories.set(key, entry);
         if (kind === "actual" && row.line_type === "expense")
           daily[
             Number((row as ForecastData["daily"][number]).date.slice(8, 10))
           ] += Number(row.amount_cents);
       }
     }
+    // Compute each account/expense category before aggregation: both the method and
+    // max(plan, actual/pace) are account-specific and cannot be applied after summing.
+    for (const [key, row] of accountCategories) {
+      row.forecast =
+        elapsed === days
+          ? row.actual
+          : period === "future"
+            ? row.plan
+            : row.type === "expense" && row.method === "variable"
+              ? Math.max(row.plan, Math.round((row.actual * days) / elapsed))
+              : Math.max(row.plan, row.actual);
+      const existing = categories.get(key);
+      if (!existing) categories.set(key, { ...row });
+      else {
+        existing.plan += row.plan;
+        existing.actual += row.actual;
+        existing.forecast += row.forecast;
+        if (existing.method !== row.method) existing.method = "mixed";
+      }
+    }
   }
-  const rows = [...categories.values()].map((row) => ({
-    ...row,
-    forecast:
-      elapsed === days
-        ? row.actual
-        : period === "future"
-          ? row.plan
-          : row.type === "expense"
-            ? Math.max(row.plan, Math.round((row.actual * days) / elapsed))
-            : Math.max(row.plan, row.actual),
-  }));
+  const rows = [...categories.values()];
+  // Income has no selectable method. Preserve its existing scope-level formula.
+  for (const row of rows) {
+    if (row.type === "income")
+      row.forecast =
+        elapsed === days
+          ? row.actual
+          : period === "future"
+            ? row.plan
+            : Math.max(row.plan, row.actual);
+  }
   const total = (
     type: "expense" | "income",
     field: "plan" | "actual" | "forecast",

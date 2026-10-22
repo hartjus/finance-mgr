@@ -12,6 +12,7 @@ function report(month = "2026-10") {
     today: "2026-10-10",
     cutoff: "2026-10-10",
     balance_cents: "200000",
+    methods: [{ category_id: "expense", method: "variable" }],
     plans: [amount("expense", "30000"), amount("income", "100000")],
     daily:
       month === "2026-10"

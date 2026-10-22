@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Badge,
@@ -36,7 +36,11 @@ import {
   YAxis,
 } from "recharts";
 import { api, money, type Account } from "./api";
-import { calculateForecast, type ForecastData } from "./forecast";
+import {
+  calculateForecast,
+  type ForecastData,
+  type ForecastMethod,
+} from "./forecast";
 
 export function ForecastScreen({
   accounts,
@@ -55,6 +59,16 @@ export function ForecastScreen({
   const [type, setType] = useState("expense");
   const [scenario, setScenario] = useState(false);
   const [reduction, setReduction] = useState<number | string>(0);
+  const [savingMethod, setSavingMethod] = useState<string | null>(null);
+  const [methodError, setMethodError] = useState("");
+  const saveInFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const ids = (scopeId === "all" ? accounts.map((a) => a.id) : [scopeId]).join(
     ",",
   );
@@ -83,6 +97,44 @@ export function ForecastScreen({
   }, [ids, month, retry]);
   const selected = accounts.find((a) => a.id === scopeId);
   const writable = selected?.is_active && selected.permission !== "viewer";
+  const saveMethod = async (categoryId: string, method: ForecastMethod) => {
+    if (!writable || saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSavingMethod(categoryId);
+    setMethodError("");
+    try {
+      const saved = await api<{ category_id: string; method: ForecastMethod }>(
+        `/accounts/${scopeId}/forecast-methods/${categoryId}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ method }),
+        },
+      );
+      if (mounted.current) {
+        setData(
+          (current) =>
+            current?.map((account) => ({
+              ...account,
+              methods: [
+                ...(account.methods ?? []).filter(
+                  (item) => item.category_id !== categoryId,
+                ),
+                saved,
+              ],
+            })) ?? null,
+        );
+        setReduction(0);
+      }
+    } catch (err) {
+      if (mounted.current)
+        setMethodError(
+          `Could not save forecast method: ${(err as Error).message}. The displayed method is unchanged; retry or reload to verify.`,
+        );
+    } finally {
+      saveInFlight.current = false;
+      if (mounted.current) setSavingMethod(null);
+    }
+  };
   const openPlan = () => navigate(`/accounts/${scopeId}/budget`);
   const history = () =>
     navigate(`/accounts/${selected?.id ?? accounts[0].id}/ledger`);
@@ -387,11 +439,22 @@ export function ForecastScreen({
                   role="region"
                   aria-label="Category comparison"
                 >
-                  <Table miw={620} aria-label="Forecast categories">
+                  {methodError && (
+                    <Alert color="red" role="alert" mb="sm">
+                      {methodError}
+                    </Alert>
+                  )}
+                  {savingMethod && (
+                    <Text role="status" size="sm">
+                      Saving forecast method…
+                    </Text>
+                  )}
+                  <Table miw={760} aria-label="Forecast categories">
                     <Table.Thead>
                       <Table.Tr>
                         {[
                           "Category",
+                          ...(type === "expense" ? ["Method"] : []),
                           "Monthly plan",
                           actualLabel,
                           model.period === "past" ? "Final" : "Forecast",
@@ -432,6 +495,40 @@ export function ForecastScreen({
                                 mt={6}
                               />
                             </Table.Td>
+                            {type === "expense" && (
+                              <Table.Td>
+                                {writable ? (
+                                  <Select
+                                    aria-label={`${row.name} forecast method`}
+                                    data={[
+                                      { value: "fixed", label: "Fixed" },
+                                      { value: "variable", label: "Variable" },
+                                    ]}
+                                    value={row.method}
+                                    disabled={savingMethod !== null}
+                                    allowDeselect={false}
+                                    w={120}
+                                    onChange={(value) =>
+                                      value &&
+                                      value !== row.method &&
+                                      void saveMethod(
+                                        row.id,
+                                        value as ForecastMethod,
+                                      )
+                                    }
+                                  />
+                                ) : (
+                                  <Badge
+                                    variant="light"
+                                    color={
+                                      row.method === "mixed" ? "gray" : "blue"
+                                    }
+                                  >
+                                    {row.method}
+                                  </Badge>
+                                )}
+                              </Table.Td>
+                            )}
                             <Table.Td>{money(row.plan)}</Table.Td>
                             <Table.Td>{money(row.actual)}</Table.Td>
                             <Table.Td>{money(row.forecast)}</Table.Td>
@@ -451,6 +548,18 @@ export function ForecastScreen({
                     </Table.Tbody>
                   </Table>
                 </div>
+                {type === "expense" && (
+                  <Text size="xs" c="dimmed" mt="sm">
+                    Methods are saved per account and category, shared with
+                    account members, and apply across months. Unconfigured
+                    categories use Fixed.{" "}
+                    {scopeId === "all"
+                      ? "Select an account to edit. Mixed means accounts use different methods."
+                      : !writable
+                        ? "This account is read-only."
+                        : ""}
+                  </Text>
+                )}
                 {!rows.length && (
                   <Text c="dimmed" mt="md">
                     No {type === "expense" ? "expenses" : "income"} for this
@@ -514,12 +623,15 @@ export function ForecastScreen({
               </Text>
               <Text size="sm" c="dimmed">
                 Actuals come from posted transaction history through the cutoff.
-                Current-month expense forecasts use the greater of each
-                category’s plan or its daily spending pace; income uses the
-                greater of plan or received income. Completed months use
-                actuals; future months use plans. The plan line spreads spending
-                evenly across the month. Front-loaded bills can overstate a pace
-                estimate. These are estimates, not scheduled payments.
+                Fixed expenses use the greater of plan or actual spending,
+                without extrapolation. Variable expenses use the greater of plan
+                or daily spending pace. Each account/expense category is
+                calculated separately before combining accounts. Income uses the
+                greater of plan or received income. Completed months and the
+                final calendar day use actuals; future months use plans. The
+                plan line spreads spending evenly across the month. Use Fixed
+                for bills paid early in the month. These are estimates, not
+                scheduled payments.
               </Text>
             </Card>
             <Modal

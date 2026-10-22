@@ -1,5 +1,7 @@
 # Product brief: Budget & forecast (new version)
 
+Follow-up: the later [Fixed/Variable methods feature](forecast-methods.md) supersedes the original all-expenses pace rule and adds persisted account/category preferences. The original implementation report below records the initial version.
+
 Keep the existing Budget screen unchanged. Add a separate screen using existing plans and posted transaction history, inspired by the approved visual concept.
 
 ## Acceptance criteria

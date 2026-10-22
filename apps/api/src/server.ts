@@ -7,6 +7,9 @@ import { config } from './config.js';
 import { authPool, pool } from './db.js';
 import { encryptAccountNumber, hashToken, newToken } from './security.js';
 import { BulkError, commitBulk } from './bulk-transactions.js';
+import { saveForecastMethodSql } from './forecast-method.js';
+import type { PoolClient } from 'pg';
+import { BudgetError, copyBudgetYear, copyJanuary, createBudgetLine, mutateBudgetLine } from './budget-copy.js';
 
 type AuthUser = { id: string; email: string; role: 'admin' | 'user' };
 declare module 'fastify' { interface FastifyRequest { user?: AuthUser } }
@@ -16,6 +19,16 @@ await app.register(cookie, { secret: config.SESSION_SECRET });
 await app.register(cors, { origin: config.WEB_ORIGIN, credentials: true });
 
 const body = <T extends z.ZodTypeAny>(schema: T, request: FastifyRequest) => schema.parse(request.body);
+async function budgetWrite(reply: FastifyReply, work: (client: PoolClient) => Promise<unknown>, status = 204) {
+  const client = await pool.connect();
+  try {
+    const result = await work(client);
+    return status === 204 ? reply.code(204).send() : reply.code(status).send(result);
+  } catch (error) {
+    if (error instanceof BudgetError) return reply.code(error.status).send({ code: error.code, title: error.message });
+    return reply.code(500).send({ code: 'BUDGET_SAVE_FAILED', title: 'Could not save the budget. Reload the saved budget before retrying.' });
+  } finally { client.release(); }
+}
 const emailSchema = z.string().email().max(320).transform((value) => value.toLowerCase());
 const passwordSchema = z.string().min(12).max(128);
 const transactionInput = z.object({
@@ -211,6 +224,16 @@ app.get('/api/v1/accounts/:accountId/reconciliation', { preHandler: requireUser 
   return { transactions: result.rows };
 });
 
+app.put('/api/v1/accounts/:accountId/forecast-methods/:categoryId', { preHandler: requireUser }, async (request, reply) => {
+  const { accountId, categoryId } = z.object({ accountId: z.string().uuid(), categoryId: z.string().uuid() }).parse(request.params);
+  const { method } = body(z.object({ method: z.enum(['fixed', 'variable']) }).strict(), request);
+  const access = await requireAccount(request, reply, accountId, true);
+  if (!access || reply.sent) return;
+  const result = await pool.query(saveForecastMethodSql, [accountId, categoryId, request.user!.id, method]);
+  if (!result.rowCount) return reply.code(404).send({ code: 'NOT_FOUND', title: 'Category is unavailable for forecasting in this account' });
+  return result.rows[0];
+});
+
 app.get('/api/v1/accounts/:accountId/forecast', { preHandler: requireUser }, async (request, reply) => {
   const accountId = z.string().uuid().parse((request.params as { accountId: string }).accountId);
   const { month } = z.object({ month: z.string().regex(/^(19\d{2}|20\d{2}|21\d{2}|2200)-(0[1-9]|1[0-2])$/) }).parse(request.query);
@@ -241,6 +264,8 @@ app.get('/api/v1/accounts/:accountId/forecast', { preHandler: requireUser }, asy
   ) SELECT
     COALESCE((SELECT json_agg(p ORDER BY p.line_type,p.category_name) FROM forecast_plans p),'[]') AS plans,
     COALESCE((SELECT json_agg(d ORDER BY d.date,d.category_name) FROM forecast_daily d),'[]') AS daily,
+    COALESCE((SELECT json_agg(json_build_object('category_id',f.category_id,'method',f.method) ORDER BY f.category_id)
+      FROM account_category_forecast_methods f WHERE f.account_id=$1),'[]') AS methods,
     (a.starting_balance_cents + COALESCE((SELECT sum(t.amount_cents) FROM transactions t
       WHERE t.account_id=a.id AND t.status='posted' AND t.deleted_at IS NULL AND t.occurred_on <= $3::date),0))::text AS balance_cents
     FROM accounts a WHERE a.id=$1`, [accountId, `${month}-01`, cutoff]);
@@ -256,28 +281,41 @@ app.get('/api/v1/accounts/:accountId/budget', { preHandler: requireUser }, async
 });
 
 app.post('/api/v1/accounts/:accountId/budget/lines', { preHandler: requireUser }, async (request, reply) => {
-  const accountId = z.string().uuid().parse((request.params as { accountId: string }).accountId); if (!await requireAccount(request, reply, accountId, true)) return;
+  const accountId = z.string().uuid().parse((request.params as { accountId: string }).accountId);
   const input = body(z.object({ year: z.number().int().min(1900).max(2200), lineType: z.enum(['income','expense']), name: z.string().trim().min(1).max(200), categoryId: z.string().uuid() }), request);
-  const category = await pool.query('SELECT 1 FROM categories WHERE id=$1 AND user_id=$2', [input.categoryId, request.user!.id]); if (!category.rowCount) return reply.code(422).send({ code: 'INVALID_CATEGORY', title: 'Choose a valid category' });
-  const result = await pool.query('INSERT INTO budget_lines (user_id,account_id,budget_year,line_type,name,category_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id', [request.user!.id,accountId,input.year,input.lineType,input.name,input.categoryId]);
-  await pool.query('INSERT INTO budget_line_months (budget_line_id,month,amount_cents) SELECT $1,generate_series(1,12),0', [result.rows[0].id]);
-  return reply.code(201).send({ id: result.rows[0].id });
+  return budgetWrite(reply,client => createBudgetLine(client,request.user!.id,accountId,input),201);
+});
+
+app.post('/api/v1/accounts/:accountId/budget/copy-next-year', { preHandler: requireUser }, async (request, reply) => {
+  const accountId = z.string().uuid().parse((request.params as { accountId: string }).accountId);
+  const input = body(z.object({ sourceYear: z.number().int().min(1900).max(2199), confirmed: z.literal(true) }).strict(), request);
+  return budgetWrite(reply,client => copyBudgetYear(client,request.user!.id,accountId,input.sourceYear),201);
+});
+
+app.post('/api/v1/budget-lines/:lineId/copy-january', { preHandler: requireUser }, async (request, reply) => {
+  const lineId = z.string().uuid().parse((request.params as { lineId: string }).lineId);
+  return budgetWrite(reply,client => copyJanuary(client,request.user!.id,lineId));
 });
 
 app.patch('/api/v1/budget-lines/:lineId/months', { preHandler: requireUser }, async (request, reply) => {
   const lineId = z.string().uuid().parse((request.params as { lineId: string }).lineId); const input = body(z.object({ month: z.number().int().min(1).max(12), amountCents: z.number().int().nonnegative(), checked: z.boolean() }), request);
-  const line = await pool.query<{ account_id: string }>('SELECT account_id FROM budget_lines WHERE id=$1 AND deleted_at IS NULL', [lineId]); if (!line.rowCount || !await requireAccount(request, reply, line.rows[0].account_id, true)) return;
-  await pool.query('UPDATE budget_line_months SET amount_cents=$1,checked_at=CASE WHEN $2 THEN COALESCE(checked_at,now()) ELSE NULL END WHERE budget_line_id=$3 AND month=$4', [input.amountCents,input.checked,lineId,input.month]); return reply.code(204).send();
+  return budgetWrite(reply,client => mutateBudgetLine(client,request.user!.id,lineId,async () => {
+    await client.query('UPDATE budget_line_months SET amount_cents=$1,checked_at=CASE WHEN $2 THEN COALESCE(checked_at,now()) ELSE NULL END WHERE budget_line_id=$3 AND month=$4', [input.amountCents,input.checked,lineId,input.month]);
+  }));
 });
 
 app.post('/api/v1/budget-lines/:lineId/replicate', { preHandler: requireUser }, async (request, reply) => {
-  const lineId = z.string().uuid().parse((request.params as { lineId: string }).lineId); const input = body(z.object({ amountCents: z.number().int().nonnegative(), fromMonth: z.number().int().min(1).max(12) }), request); const line = await pool.query<{ account_id: string }>('SELECT account_id FROM budget_lines WHERE id=$1 AND deleted_at IS NULL', [lineId]); if (!line.rowCount || !await requireAccount(request, reply, line.rows[0].account_id, true)) return;
-  await pool.query('UPDATE budget_line_months SET amount_cents=$1 WHERE budget_line_id=$2 AND month >= $3', [input.amountCents,lineId,input.fromMonth]); return reply.code(204).send();
+  const lineId = z.string().uuid().parse((request.params as { lineId: string }).lineId); const input = body(z.object({ amountCents: z.number().int().nonnegative(), fromMonth: z.number().int().min(1).max(12) }), request);
+  return budgetWrite(reply,client => mutateBudgetLine(client,request.user!.id,lineId,async () => {
+    await client.query('UPDATE budget_line_months SET amount_cents=$1 WHERE budget_line_id=$2 AND month >= $3', [input.amountCents,lineId,input.fromMonth]);
+  }));
 });
 
 app.delete('/api/v1/budget-lines/:lineId', { preHandler: requireUser }, async (request, reply) => {
-  const lineId = z.string().uuid().parse((request.params as { lineId: string }).lineId); const line = await pool.query<{ account_id: string }>('SELECT account_id FROM budget_lines WHERE id=$1 AND deleted_at IS NULL', [lineId]); if (!line.rowCount || !await requireAccount(request, reply, line.rows[0].account_id, true)) return;
-  await pool.query('UPDATE budget_lines SET deleted_at=now(),updated_at=now() WHERE id=$1', [lineId]); return reply.code(204).send();
+  const lineId = z.string().uuid().parse((request.params as { lineId: string }).lineId);
+  return budgetWrite(reply,client => mutateBudgetLine(client,request.user!.id,lineId,async () => {
+    await client.query('UPDATE budget_lines SET deleted_at=now(),updated_at=now() WHERE id=$1', [lineId]);
+  }));
 });
 
 app.post('/api/v1/accounts/:accountId/reconciliation', { preHandler: requireUser }, async (request, reply) => {
