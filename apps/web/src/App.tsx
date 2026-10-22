@@ -324,6 +324,12 @@ function TransactionForm({
   );
 }
 
+const canDeleteTransaction = (account: Account, transaction: Transaction) =>
+  account.permission !== "viewer" && account.is_active &&
+  !transaction.reconciled_at && !transaction.transfer_id;
+const canEditTransaction = (account: Account, transaction: Transaction) =>
+  canDeleteTransaction(account, transaction) && transaction.status === "posted";
+
 function Ledger({
   account,
   categories,
@@ -572,17 +578,8 @@ function Ledger({
                 </Table.Tr>
               ) : (
                 transactions.map((transaction) => {
-                  const editable =
-                    account.permission !== "viewer" &&
-                    account.is_active &&
-                    transaction.status === "posted" &&
-                    !transaction.reconciled_at &&
-                    !transaction.transfer_id;
-                  const deletable =
-                    account.permission !== "viewer" &&
-                    account.is_active &&
-                    !transaction.reconciled_at &&
-                    !transaction.transfer_id;
+                  const editable = canEditTransaction(account, transaction);
+                  const deletable = canDeleteTransaction(account, transaction);
                   return (
                     <Table.Tr key={transaction.id}>
                       <Table.Td>{dateOnly(transaction.occurred_on)}</Table.Td>
@@ -2041,11 +2038,18 @@ function Reconciliation({
   const [saving, setSaving] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [entryOpen, setEntryOpen] = useState(false);
+  const [editing, setEditing] = useState<Transaction | null>(null);
+  const [deleting, setDeleting] = useState<Transaction | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const [deletingBusy, setDeletingBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [error, setError] = useState("");
   const load = async (preserveSelection = false) => {
     setLoading(true);
     try {
       setError("");
+      setLoadFailed(false);
       const result = await api<{ transactions: Transaction[] }>(
         `/accounts/${account.id}/reconciliation`,
       );
@@ -2059,6 +2063,9 @@ function Reconciliation({
       );
     } catch (err) {
       setError((err as Error).message);
+      setLoadFailed(true);
+      setTransactions([]);
+      setSelectedIds([]);
     } finally {
       setLoading(false);
     }
@@ -2082,7 +2089,28 @@ function Reconciliation({
   const preview = Number(account.reconciled_balance_cents) + selectedTotal;
   const allSelected =
     transactions.length > 0 && selectedIds.length === transactions.length;
+  const writable = account.is_active && account.permission !== "viewer";
+  const mutationBlocked = loading || refreshing || saving || deletingBusy || entryOpen || Boolean(deleting) || loadFailed;
+  const refreshAfterMutation = async () => {
+    setRefreshing(true);
+    try { await load(true); await onChanged(); }
+    catch (err) { setError((err as Error).message); setLoadFailed(true); }
+    finally { setRefreshing(false); }
+  };
+  const confirmDelete = async () => {
+    if (!deleting || deletingBusy) return;
+    setDeletingBusy(true);
+    setDeleteError("");
+    try {
+      await api(`/transactions/${deleting.id}`, { method: "DELETE" });
+      setSelectedIds(current => current.filter(id => id !== deleting.id));
+      setDeleting(null);
+      await refreshAfterMutation();
+    } catch (err) { setDeleteError((err as Error).message); }
+    finally { setDeletingBusy(false); }
+  };
   const reconcile = async () => {
+    if (!writable || mutationBlocked || !selectedIds.length) return;
     try {
       setSaving(true);
       setError("");
@@ -2111,7 +2139,8 @@ function Reconciliation({
           {account.is_active && account.permission !== "viewer" && (
             <Button
               leftSection={<IconPlus size={16} />}
-              onClick={() => setEntryOpen(true)}
+              disabled={loading || refreshing || saving || deletingBusy}
+              onClick={() => { setEditing(null); setEntryOpen(true); }}
             >
               Add transaction
             </Button>
@@ -2156,26 +2185,27 @@ function Reconciliation({
                     : transactions.map((transaction) => transaction.id),
                 )
               }
-              disabled={!transactions.length}
+              disabled={!transactions.length || mutationBlocked}
             >
               {allSelected ? "Clear selection" : "Select all visible"}
             </Button>
             <Button
               variant="subtle"
               onClick={() => setSelectedIds([])}
-              disabled={!selectedIds.length}
+              disabled={!selectedIds.length || mutationBlocked}
             >
               Clear selection
             </Button>
           </Group>
           <Button
-            disabled={!selectedIds.length}
+            disabled={!selectedIds.length || !writable || mutationBlocked}
             onClick={() => setConfirmOpen(true)}
           >
             Save and reconcile
           </Button>
         </Group>
         {error && <Text c="red">{error}</Text>}
+        {loadFailed && <Button variant="light" onClick={() => void refreshAfterMutation()}>Retry</Button>}
         <Card withBorder p={0} style={{ overflowX: "auto" }}>
           <Table striped highlightOnHover miw={850}>
             <Table.Thead>
@@ -2185,12 +2215,13 @@ function Reconciliation({
                 <Table.Th>Description</Table.Th>
                 <Table.Th>Category</Table.Th>
                 <Table.Th ta="right">Amount</Table.Th>
+                <Table.Th ta="right">Actions</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               {loading ? (
                 <Table.Tr>
-                  <Table.Td colSpan={5}>
+                  <Table.Td colSpan={6}>
                     <Center>
                       <Loader size="sm" />
                     </Center>
@@ -2198,9 +2229,9 @@ function Reconciliation({
                 </Table.Tr>
               ) : transactions.length === 0 ? (
                 <Table.Tr>
-                  <Table.Td colSpan={5}>
+                  <Table.Td colSpan={6}>
                     <Text ta="center" c="dimmed" py="xl">
-                      No unreconciled posted transactions.
+                      {loadFailed ? "Transactions could not be loaded." : "No unreconciled posted transactions."}
                     </Text>
                   </Table.Td>
                 </Table.Tr>
@@ -2218,6 +2249,7 @@ function Reconciliation({
                       <input
                         aria-label={`Select ${transaction.description}`}
                         type="checkbox"
+                        disabled={mutationBlocked}
                         checked={selectedIds.includes(transaction.id)}
                         onChange={() =>
                           setSelectedIds((current) =>
@@ -2242,6 +2274,25 @@ function Reconciliation({
                       }
                     >
                       {money(transaction.amount_cents)}
+                    </Table.Td>
+                    <Table.Td ta="right">
+                      {canEditTransaction(account, transaction) && (
+                        <ActionIcon
+                          aria-label={`Edit ${transaction.description}`}
+                          variant="subtle"
+                          disabled={refreshing || saving || deletingBusy}
+                          onClick={() => { setEditing(transaction); setEntryOpen(true); }}
+                        ><IconPencil size={16} /></ActionIcon>
+                      )}
+                      {canDeleteTransaction(account, transaction) && (
+                        <ActionIcon
+                          aria-label={`Delete ${transaction.description}`}
+                          color="red"
+                          variant="subtle"
+                          disabled={refreshing || saving || deletingBusy}
+                          onClick={() => { setDeleteError(""); setDeleting(transaction); }}
+                        ><IconTrash size={16} /></ActionIcon>
+                      )}
                     </Table.Td>
                   </Table.Tr>
                 ))
@@ -2297,19 +2348,39 @@ function Reconciliation({
         </Modal>
         <Modal
           opened={entryOpen}
-          onClose={() => setEntryOpen(false)}
-          title="Add transaction"
+          onClose={() => { setEntryOpen(false); setEditing(null); }}
+          title={editing ? "Edit transaction" : "Add transaction"}
           size="lg"
         >
           <TransactionForm
             account={account}
             categories={categories}
+            transaction={editing}
             onSaved={async () => {
+              if (editing) setSelectedIds(current => current.filter(id => id !== editing.id));
               setEntryOpen(false);
-              await load(true);
-              await onChanged();
+              setEditing(null);
+              await refreshAfterMutation();
             }}
           />
+        </Modal>
+        <Modal
+          opened={Boolean(deleting)}
+          onClose={() => { if (!deletingBusy) setDeleting(null); }}
+          closeOnEscape={!deletingBusy}
+          closeOnClickOutside={!deletingBusy}
+          withCloseButton={!deletingBusy}
+          title="Delete transaction"
+          centered
+        >
+          <Stack>
+            <Text>Delete “{deleting?.description}”? This transaction will be removed from the ledger.</Text>
+            {deleteError && <Text c="red" role="alert">{deleteError}</Text>}
+            <Group justify="flex-end">
+              <Button variant="default" disabled={deletingBusy} onClick={() => setDeleting(null)}>Cancel</Button>
+              <Button color="red" loading={deletingBusy} onClick={() => void confirmDelete()}>Delete transaction</Button>
+            </Group>
+          </Stack>
         </Modal>
       </Stack>
     </Container>
