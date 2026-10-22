@@ -2318,8 +2318,10 @@ type BulkEntry = {
   identifier: string;
   notes: string;
 };
+// UI-only draft keys; never persisted or used as security identifiers.
+let nextBulkEntryId = 0;
 const newBulkEntry = (): BulkEntry => ({
-  id: crypto.randomUUID(),
+  id: `bulk-row-${++nextBulkEntryId}`,
   kind: "debit",
   occurredOn: today(),
   amount: "",
@@ -2345,7 +2347,7 @@ function BulkTransactions({
   onAccountChange: (id: string) => void;
 }) {
   const accountId = account.id;
-  const [entries, setEntries] = useState<BulkEntry[]>([newBulkEntry()]);
+  const [entries, setEntries] = useState<BulkEntry[]>(() => [newBulkEntry()]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const activeAccounts = accounts.filter((item) => item.is_active);

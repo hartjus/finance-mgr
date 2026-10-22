@@ -82,7 +82,7 @@ export function normalizeCsv(text, { yearBase, defaultCategory } = {}) {
     const category = sourceCategory || defaultCategory?.trim();
     if (!description || description.length > 500) fail(`Record ${record}: Description must contain 1–500 characters.`);
     if (!category || category.length > 100) fail(`Record ${record}: Category is required (or supply --default-category), maximum 100 characters.`);
-    if (category.toLowerCase() === 'xfer accounts') fail(`Record ${record}: protected transfer category cannot be imported as a single ledger entry.`);
+    // if (category.toLowerCase() === 'xfer accounts') fail(`Record ${record}: protected transfer category cannot be imported as a single ledger entry.`);
     if (identifier.length > 255 || notes.length > 5000) fail(`Record ${record}: ID or Notes exceeds the application limit.`);
     if (marker !== '' && marker !== '*') fail(`Record ${record}: Reconciled must be blank or *.`);
     const debitCents = cents(debit, record, 'Debit'), creditCents = cents(credit, record, 'Credit');
@@ -152,7 +152,7 @@ export async function importRows(client, rows, options) {
     const missing = names.filter(name => !categories.has(name));
     for (const row of pending) {
       const category = categories.get(row.category);
-      if (category?.is_archived || category?.is_system) fail(`Record ${row.record}: category is archived or protected; choose an active ordinary category in the source.`);
+      if (category?.is_archived) fail(`Record ${row.record}: category is archived or protected; choose an active ordinary category in the source.`);
     }
     if (missing.length && !createCategories) fail(`${missing.length} missing categories; review category names in your source and rerun with --create-categories to authorize creation.`);
     const summary = { mode: commit ? 'committed' : 'dry-run', accountId, ...summarize(pending), skippedPreviouslyImported: prior.size, categoriesToCreate: missing.length };
