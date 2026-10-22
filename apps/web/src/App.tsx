@@ -1375,9 +1375,10 @@ function Budget({
     return (
       <>
         <Table.Tr>
-          <Table.Td colSpan={15}>
+          <Table.Td>
             <Text fw={700}>{type === "expense" ? "Expenses" : "Income"}</Text>
           </Table.Td>
+          <Table.Td colSpan={14} />
         </Table.Tr>
         {section.map((line) => {
           const lineTotal = line.months.reduce(
@@ -1875,8 +1876,15 @@ function Budget({
             {error}
           </Text>
         </Card>
-        <Card withBorder p={0} style={{ overflowX: "auto" }}>
-          <Table miw={1500}>
+        <Card
+          withBorder
+          p={0}
+          className="budget-grid-scroll"
+          role="region"
+          aria-label="Editable budget grid"
+          tabIndex={0}
+        >
+          <Table miw={1500} className="budget-editor-table">
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Line</Table.Th>
