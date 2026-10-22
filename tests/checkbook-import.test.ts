@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { HEADER, normalizeCsv, parseCsv, identifyRows, summarize, importRows } from '../scripts/import-checkbook.mjs';
 
@@ -47,11 +47,50 @@ describe('Checkbook parser', () => {
     expect(() => parse('x'.repeat(10 * 1024 * 1024 + 1))).toThrow('10 MiB');
     expect(() => parse(HEADER.join(',') + '\n' + 'x\n'.repeat(20001))).toThrow('20,000');
   });
-  it('handles explicit fallback categories but rejects protected transfers', () => {
+  it('requires a category or explicit fallback', () => {
     const blank = csv().replace('Groceries', '');
     expect(() => parse(blank)).toThrow('Category');
     expect(normalizeCsv(blank, { yearBase: 2000, defaultCategory: 'Historical' })[0].category).toBe('Historical');
-    expect(() => parse(csv().replace('Groceries', 'Xfer Accounts'))).toThrow('protected');
+  });
+  it('accepts a standalone historical transfer without a matching transaction', () => {
+    const rows = parse(csv().replace('Groceries', 'Xfer Accounts'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ category: 'Xfer Accounts', amountCents: '-1234', reconciled: true });
+    expect(normalizeCsv(csv().replace('Groceries', ''), { yearBase: 2000, defaultCategory: 'Xfer Accounts' })[0].category).toBe('Xfer Accounts');
+  });
+  it.each([false, true])('imports an active protected category with commit=%s', async commit => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ user_id: 'owner', permission: 'owner', is_active: true }] })
+      .mockResolvedValueOnce({ rows: [] }) // No previously imported IDs
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // No overlapping history
+      .mockResolvedValueOnce({ rows: [{ id: 'transfer-category', name: 'Xfer Accounts', is_system: true, is_archived: false }] })
+      .mockResolvedValue({ rows: [] });
+    const result = await importRows({ query }, parse(csv().replace('Groceries', 'Xfer Accounts')), {
+      accountId: account, email: 'owner@example.test', commit, confirmReconciled: true,
+    });
+    expect(result).toMatchObject({ mode: commit ? 'committed' : 'dry-run', rows: 1, netCents: '-1234', reconciled: 1, categoriesToCreate: 0 });
+    const inserts = query.mock.calls.filter(([sql]) => sql.includes('INSERT INTO transactions'));
+    expect(inserts).toHaveLength(commit ? 1 : 0);
+    if (commit) expect(inserts[0][1]).toEqual([
+      expect.any(String), 'owner', account, '2026-10-18', '-1234', 'Example store', 'transfer-category', '001', 'Memo', true,
+    ]);
+    expect(query).toHaveBeenLastCalledWith(commit ? 'COMMIT' : 'ROLLBACK');
+    expect(query).toHaveBeenCalledTimes(commit ? 7 : 6);
+  });
+  it('still rejects archived protected categories without inserting transactions', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ user_id: 'owner', permission: 'owner', is_active: true }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: 'transfer-category', name: 'Xfer Accounts', is_system: true, is_archived: true }] })
+      .mockResolvedValue({ rows: [] });
+    await expect(importRows({ query }, parse(csv().replace('Groceries', 'Xfer Accounts')), {
+      accountId: account, email: 'owner@example.test', commit: true, confirmReconciled: true,
+    })).rejects.toThrow('archived');
+    expect(query.mock.calls.some(([sql]) => sql.includes('INSERT INTO transactions'))).toBe(false);
+    expect(query).toHaveBeenLastCalledWith('ROLLBACK');
   });
   it('rejects malformed quoting and handles trailing/blank records', () => {
     expect(() => parseCsv('a,"unterminated')).toThrow('unterminated');
