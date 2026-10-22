@@ -152,6 +152,14 @@ Implementation exception for ledger history: `/accounts/:id/ledger` uses numbere
 
 Authorization and domain invariants are enforced by services, not solely by the client. Database constraints reinforce critical invariants, including currency, amount direction where applicable, ownership relationships, account membership, and transfer linkage. Inactive accounts retain readable history but cannot receive new transactions, transfers, scheduled transactions, or other balance-affecting updates until reactivated.
 
+### Atomic bulk entry
+
+`POST /api/v1/accounts/:accountId/transactions/bulk` accepts `{ requestId, transactions }`, with 1–500 entries using the single-entry fields (excluding version), safe nonzero integer cents, and a 1–100 character alphanumeric/underscore/hyphen request ID. The existing JSON body-size limit also applies. It independently validates the entire batch and returns `201 { createdCount }`. Invalid rows return 422, unauthorized/inactive accounts are rejected, and database failures roll back all entries.
+
+The transaction locks account/membership and active user-owned category rows, inserts posted/unreconciled entries, and records a SHA-256 payload fingerprint plus count in the existing `idempotency_keys` table. An acting-user/request-ID advisory lock serializes concurrent identical submissions. Identical retries return the original count; changed payload/account with the same key returns 409. IDs are scoped to this operation using a `bulk-transactions:` prefix. No new schema is introduced.
+
+The frontend validates all rows before sending a single batch, disables editing while in flight, retains the request ID for unchanged retries within the mounted draft, and clears committed rows before refreshing balances. Retry state is not persisted across page reload or navigation; do not re-enter an uncertain batch without checking history. Existing duplicates from older per-row bulk saves are not removed by this change. See [atomic bulk add](specs/atomic-bulk-add.md) for acceptance and verification.
+
 ## Historical CSV migration
 
 The trusted operator CLI `scripts/import-checkbook.mjs` supports the fixed Checkbook CSV format, separately from the HTTP API and proposed bank-matching workflow. It requires database access, an explicit acting user and target account, active owner/editor membership, dry-run review, and explicit commit/reconciled acknowledgement. It inserts posted historical entries and optionally ordinary categories atomically; deterministic account-scoped source IDs protect unchanged retries. It never modifies existing ledger entries or starting balances. Starred entries are reconciled at import time with the acting user recorded. No new schema is required. See [historical import operations](historical-import.md) for format, limits, backup, and overlap precautions.

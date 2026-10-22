@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { config } from './config.js';
 import { authPool, pool } from './db.js';
 import { encryptAccountNumber, hashToken, newToken } from './security.js';
+import { BulkError, commitBulk } from './bulk-transactions.js';
 
 type AuthUser = { id: string; email: string; role: 'admin' | 'user' };
 declare module 'fastify' { interface FastifyRequest { user?: AuthUser } }
@@ -131,6 +132,31 @@ app.post('/api/v1/accounts/:accountId/transactions', { preHandler: requireUser }
   const accountId = z.string().uuid().parse((request.params as { accountId: string }).accountId); if (!await requireAccount(request, reply, accountId, true)) return;
   const input = body(transactionInput, request); const category = await pool.query('SELECT 1 FROM categories WHERE id=$1 AND user_id=$2 AND is_archived=false', [input.categoryId,request.user!.id]); if (!category.rowCount) return reply.code(422).send({ code: 'INVALID_CATEGORY', title: 'Choose an active category' });
   const result = await pool.query(`INSERT INTO transactions (user_id,account_id,occurred_on,amount_cents,description,category_id,identifier,notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`, [request.user!.id,accountId,input.occurredOn,input.amountCents,input.description,input.categoryId,input.identifier ?? null,input.notes ?? null]); return reply.code(201).send({ transaction: result.rows[0] });
+});
+
+app.post('/api/v1/accounts/:accountId/transactions/bulk', { preHandler: requireUser }, async (request, reply) => {
+  const accountId = z.string().uuid().parse((request.params as { accountId: string }).accountId);
+  const parsed = z.object({
+    requestId: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
+    transactions: z.array(transactionInput.omit({ version: true }).extend({
+      amountCents: z.number().int().safe().refine(value => value !== 0),
+      description: z.string().trim().min(1).max(500),
+    }).strict()).min(1).max(500),
+  }).strict().safeParse(request.body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const row = typeof issue.path[1] === 'number' ? `Row ${issue.path[1] + 1}: ` : '';
+    return reply.code(422).send({ code: 'VALIDATION_ERROR', title: `${row}Check batch fields (${issue.path.join('.') || 'body'})` });
+  }
+  const client = await pool.connect();
+  try {
+    const result = await commitBulk(client, request.user!.id, accountId, parsed.data.requestId, parsed.data.transactions);
+    return reply.code(201).send(result);
+  } catch (error) {
+    if (error instanceof BulkError) return reply.code(error.status).send({ code: error.code, title: error.message });
+    // PostgreSQL errors may include a failing financial row; do not log the raw exception.
+    return reply.code(500).send({ code: 'BULK_SAVE_FAILED', title: 'Could not save the batch. Retry the unchanged batch; no partial batch is saved.' });
+  } finally { client.release(); }
 });
 
 app.get('/api/v1/accounts/:accountId/ledger', { preHandler: requireUser }, async (request, reply) => {

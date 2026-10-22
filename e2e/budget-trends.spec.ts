@@ -39,7 +39,7 @@ test("cumulative trend lines carry monthly totals forward and follow account and
                 line("expense-a", "expense", 10000),
                 line("expense-b", "expense", 5000),
                 line("already-entered", "expense", 90000, true),
-                line("income", "income", 30000),
+                line("income", "income", 30000, true),
               ],
               actuals: [
                 actual("expense-a", "expense", 4000),
@@ -71,24 +71,24 @@ test("cumulative trend lines carry monthly totals forward and follow account and
   }
   const tooltip = chart.locator(".recharts-tooltip-wrapper");
   await chart.locator('.recharts-dot[name="Actual income"]').first().hover();
-  for (const amount of ["$150.00", "$70.00", "$300.00", "$250.00"])
+  for (const amount of ["$1,050.00", "$70.00", "$300.00", "$250.00"])
     await expect(tooltip).toContainText(amount);
   await chart.locator('.recharts-dot[name="Actual income"]').nth(1).hover();
   await expect(tooltip).toContainText("Feb");
-  for (const amount of ["$300.00", "$80.00", "$600.00", "$300.00"])
+  for (const amount of ["$2,100.00", "$80.00", "$600.00", "$300.00"])
     await expect(tooltip).toContainText(amount);
   await chart.locator('.recharts-dot[name="Actual income"]').nth(2).hover();
   await expect(tooltip).toContainText("Mar");
-  for (const amount of ["$300.00", "$80.00", "$600.00"])
+  for (const amount of ["$2,100.00", "$80.00", "$600.00"])
     await expect(tooltip).toContainText(amount);
   await page.getByRole("textbox", { name: "Account", exact: true }).click();
   await page.getByRole("option", { name: "All accounts", exact: true }).click();
   await chart.scrollIntoViewIfNeeded();
   await chart.locator('.recharts-dot[name="Actual income"]').first().hover();
-  for (const amount of ["$450.00", "$210.00", "$900.00", "$750.00"])
+  for (const amount of ["$3,150.00", "$210.00", "$900.00", "$750.00"])
     await expect(tooltip).toContainText(amount);
   await chart.locator('.recharts-dot[name="Actual income"]').nth(1).hover();
-  for (const amount of ["$900.00", "$240.00", "$1,800.00"])
+  for (const amount of ["$6,300.00", "$240.00", "$1,800.00"])
     await expect(tooltip).toContainText(amount);
   await page.getByRole("textbox", { name: "Year", exact: true }).click();
   await page

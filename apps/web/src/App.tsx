@@ -1364,8 +1364,7 @@ function Budget({
       section.reduce(
         (sum, line) =>
           sum +
-          Number(line.months[index]?.amount_cents ?? 0) *
-            (line.months[index]?.checked_at ? 0 : 1),
+          Number(line.months[index]?.amount_cents ?? 0),
         0,
       ),
     );
@@ -1380,7 +1379,7 @@ function Budget({
         {section.map((line) => {
           const lineTotal = line.months.reduce(
             (sum, month) =>
-              sum + Number(month.amount_cents) * (month.checked_at ? 0 : 1),
+              sum + Number(month.amount_cents),
             0,
           );
           return (
@@ -1551,9 +1550,7 @@ function Budget({
       )
       .reduce((sum, line) => {
         const item = line.months.find((value) => value.month === month);
-        return (
-          sum + Number(item?.amount_cents ?? 0) * (item?.checked_at ? 0 : 1)
-        );
+        return sum + Number(item?.amount_cents ?? 0);
       }, 0);
   const actualByCategory = (type: "income" | "expense", categoryId: string) =>
     Array.from({ length: 12 }, (_, index) =>
@@ -1579,11 +1576,7 @@ function Budget({
               Number(
                 line.months.find((item) => item.month === monthNumber)
                   ?.amount_cents ?? 0,
-              ) *
-                (line.months.find((item) => item.month === monthNumber)
-                  ?.checked_at
-                  ? 0
-                  : 1),
+              ),
             0,
           ) / 100,
       actualExpenses:
@@ -1602,11 +1595,7 @@ function Budget({
               Number(
                 line.months.find((item) => item.month === monthNumber)
                   ?.amount_cents ?? 0,
-              ) *
-                (line.months.find((item) => item.month === monthNumber)
-                  ?.checked_at
-                  ? 0
-                  : 1),
+              ),
             0,
           ) / 100,
       actualIncome:
@@ -1658,7 +1647,7 @@ function Budget({
       <Text fw={600} mt="md">
         {type === "expense" ? "Expenses" : "Income"}
       </Text>
-      <Table miw={2100} withTableBorder>
+      <Table miw={2100} withTableBorder aria-label={`${type} planned versus actual`}>
         <Table.Thead>
           <Table.Tr>
             <Table.Th rowSpan={2}>Category</Table.Th>
@@ -1914,7 +1903,7 @@ function Budget({
           {renderPlannedActual("expense")}
           {renderPlannedActual("income")}
         </Card>
-        <Card withBorder>
+        <Card withBorder component="section" aria-label="Monthly budget comparison">
           <Title order={3}>Planned vs Actual by Month</Title>
           <ResponsiveContainer width="100%" height={360}>
             <BarChart data={chartData}>
@@ -2427,6 +2416,8 @@ function BulkTransactions({
 }) {
   const accountId = account.id;
   const [entries, setEntries] = useState<BulkEntry[]>(() => [newBulkEntry()]);
+  const batchAttempt = useRef<{ payload: string; requestId: string } | null>(null);
+  const saveInFlight = useRef(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const activeAccounts = accounts.filter((item) => item.is_active);
@@ -2454,36 +2445,56 @@ function BulkTransactions({
       ),
     );
   const save = async () => {
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
     try {
       setError("");
       setSaving(true);
-      for (const entry of entries) {
-        if (!entry.categoryId) throw new Error("Every row needs a category");
+      if (entries.length > 500) throw new Error("Save at most 500 rows at a time");
+      const transactions = entries.map((entry, index) => {
+        const row = `Row ${index + 1}: `;
+        if (!entry.categoryId) throw new Error(row + "Choose a category");
         if (!/^\d+\.\d{2}$/.test(entry.amount))
-          throw new Error("Every amount must have exactly two decimal places");
+          throw new Error(row + "Enter an amount with exactly two decimal places");
         const cents = Math.round(Number(entry.amount) * 100);
-        if (!Number.isFinite(cents) || cents <= 0)
-          throw new Error("Every amount must be greater than zero");
-        if (!entry.description.trim())
-          throw new Error("Every row needs a description");
-        await api(`/accounts/${accountId}/transactions`, {
-          method: "POST",
-          body: JSON.stringify({
-            occurredOn: entry.occurredOn,
-            amountCents: entry.kind === "debit" ? -cents : cents,
-            description: entry.description.trim(),
-            categoryId: entry.categoryId,
-            identifier: entry.identifier || undefined,
-            notes: entry.notes || undefined,
-          }),
-        });
+        if (!Number.isSafeInteger(cents) || cents <= 0)
+          throw new Error(row + "Enter an amount greater than zero within the supported range");
+        if (!entry.description.trim() || entry.description.trim().length > 500)
+          throw new Error(row + "Enter a description of 1–500 characters");
+        const date = new Date(entry.occurredOn);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.occurredOn) || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== entry.occurredOn)
+          throw new Error(row + "Enter a valid transaction date");
+        if (entry.identifier.length > 255 || entry.notes.length > 5000)
+          throw new Error(row + "Identifier or notes exceeds the allowed length");
+        return {
+          occurredOn: entry.occurredOn,
+          amountCents: entry.kind === "debit" ? -cents : cents,
+          description: entry.description.trim(),
+          categoryId: entry.categoryId,
+          identifier: entry.identifier || undefined,
+          notes: entry.notes || undefined,
+        };
+      });
+      const payload = JSON.stringify({ accountId, transactions });
+      if (batchAttempt.current?.payload !== payload) {
+        // Correlation ID only, not a security token; works without randomUUID.
+        batchAttempt.current = { payload, requestId: `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}` };
       }
-      await onSaved();
+      await api(`/accounts/${accountId}/transactions/bulk`, {
+        method: "POST",
+        body: JSON.stringify({ requestId: batchAttempt.current.requestId, transactions }),
+      });
+      // The commit succeeded: never leave saved rows in the draft if refetch fails.
       setEntries([newBulkEntry()]);
+      batchAttempt.current = null;
+      onDirtyChange(false);
+      try { await onSaved(); }
+      catch { setError("All transactions were saved, but balances could not be refreshed. Reload the page; do not re-enter the batch."); }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSaving(false);
+      saveInFlight.current = false;
     }
   };
   return (
@@ -2505,11 +2516,13 @@ function BulkTransactions({
               label: item.name,
             }))}
             value={accountId}
+            disabled={saving}
             onChange={(value) => value && onAccountChange(value)}
             searchable
             w={240}
           />
         </Group>
+        <fieldset disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <Card withBorder p={0} style={{ overflowX: "auto" }}>
           <Table miw={1120} verticalSpacing="xs">
             <Table.Thead>
@@ -2649,9 +2662,11 @@ function BulkTransactions({
             </Table.Tbody>
           </Table>
         </Card>
+        </fieldset>
         <Group>
           <Button
             variant="light"
+            disabled={saving || entries.length >= 500}
             leftSection={<IconPlus size={16} />}
             onClick={() =>
               setEntries((current) => [...current, newBulkEntry()])
