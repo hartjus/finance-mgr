@@ -73,8 +73,10 @@ describe('Fastify API routes', () => {
     expect(sql).toContain('WITH forecast_plans');
     expect(sql).toContain("t.status='posted'");
     expect(sql).toContain('t.deleted_at IS NULL');
-    expect(sql).toContain('t.transfer_id IS NULL AND NOT c.is_system');
-    expect(sql).toContain('l.deleted_at IS NULL AND NOT c.is_system');
+    expect(sql).toContain('c.is_system');
+    expect(sql).toContain('l.deleted_at IS NULL');
+    expect(sql).not.toContain('t.transfer_id IS NULL');
+    expect(sql).not.toContain('NOT c.is_system');
     expect(sql).not.toContain('checked_at');
     expect(sql).not.toMatch(/INSERT|UPDATE|DELETE/);
     expect(params.slice(0, 2)).toEqual([accountId, '2026-10-01']);
@@ -164,6 +166,38 @@ describe('Fastify API routes', () => {
     const response = await authenticated(`/api/v1/budget-lines/${lineId}`, { method: 'DELETE' });
     expect(response.statusCode).toBe(204);
     expect(state.queries.some((query) => query.includes('UPDATE budget_lines SET deleted_at'))).toBe(true);
+  });
+
+  it('creates a balanced transfer with explicitly typed debit and credit amounts', async () => {
+    state.authenticated = true;
+    const transferId = '55555555-5555-4555-8555-555555555555';
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("system_key='XFER_ACCOUNTS'")) return { rowCount: 1, rows: [{ id: categoryId }] };
+      if (sql.includes('INSERT INTO transfers')) return { rowCount: 1, rows: [{ id: transferId }] };
+      return { rowCount: 1, rows: [] };
+    });
+    const release = vi.fn();
+    pool.connect.mockResolvedValueOnce({ query, release });
+
+    const response = await authenticated('/api/v1/transfers', {
+      method: 'POST',
+      payload: {
+        sourceAccountId: accountId,
+        destinationAccountId: '66666666-6666-4666-8666-666666666666',
+        occurredOn: '2026-10-30',
+        amountCents: 1234,
+        description: 'Move funds',
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual({ transferId });
+    const [sql, values] = query.mock.calls.find(([statement]) => statement.includes('INSERT INTO transactions'))!;
+    expect(sql).toContain('-$4::bigint');
+    expect(sql).toContain(',$4::bigint');
+    expect(values).toEqual([user.id, accountId, '2026-10-30', 1234, 'Move funds', categoryId, transferId, null, '66666666-6666-4666-8666-666666666666']);
+    expect(query).toHaveBeenLastCalledWith('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('validates budget copying and requires authentication and confirmation', async () => {

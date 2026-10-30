@@ -2,6 +2,7 @@ export type ForecastMethod = "fixed" | "variable";
 export type ForecastAmount = {
   category_id: string;
   category_name: string;
+  is_system?: boolean;
   line_type: "income" | "expense";
   amount_cents: string;
 };
@@ -23,6 +24,7 @@ type ForecastRow = {
   actual: number;
   forecast: number;
   method: ForecastMethod | "mixed";
+  isSystem: boolean;
 };
 
 export function calculateForecast(data: ForecastData[]) {
@@ -65,6 +67,7 @@ export function calculateForecast(data: ForecastData[]) {
             row.line_type === "expense"
               ? (methods.get(row.category_id) ?? "fixed")
               : "fixed",
+          isSystem: Boolean(row.is_system),
         };
         entry[kind] += Number(row.amount_cents);
         accountCategories.set(key, entry);
@@ -91,6 +94,7 @@ export function calculateForecast(data: ForecastData[]) {
         existing.plan += row.plan;
         existing.actual += row.actual;
         existing.forecast += row.forecast;
+        existing.isSystem = existing.isSystem || row.isSystem;
         if (existing.method !== row.method) existing.method = "mixed";
       }
     }

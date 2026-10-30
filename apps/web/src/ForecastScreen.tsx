@@ -497,7 +497,9 @@ export function ForecastScreen({
                             </Table.Td>
                             {type === "expense" && (
                               <Table.Td>
-                                {writable ? (
+                                {row.isSystem ? (
+                                  <Badge variant="light" color="gray">Transfer</Badge>
+                                ) : writable ? (
                                   <Select
                                     aria-label={`${row.name} forecast method`}
                                     data={[

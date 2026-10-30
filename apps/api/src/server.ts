@@ -245,22 +245,21 @@ app.get('/api/v1/accounts/:accountId/forecast', { preHandler: requireUser }, asy
   const cutoff = end < today ? end : today;
   // One snapshot for plan, daily actuals and cash balance. No transaction details exposed.
   const result = await pool.query(`WITH forecast_plans AS (
-    SELECT l.category_id,c.name AS category_name,l.line_type,sum(m.amount_cents)::text AS amount_cents
+    SELECT l.category_id,c.name AS category_name,c.is_system,l.line_type,sum(m.amount_cents)::text AS amount_cents
     FROM budget_lines l JOIN budget_line_months m ON m.budget_line_id=l.id
     JOIN categories c ON c.id=l.category_id
     WHERE l.account_id=$1 AND l.budget_year=extract(year FROM $2::date)
-      AND m.month=extract(month FROM $2::date) AND l.deleted_at IS NULL AND NOT c.is_system
-    GROUP BY l.category_id,c.name,l.line_type
+      AND m.month=extract(month FROM $2::date) AND l.deleted_at IS NULL
+    GROUP BY l.category_id,c.name,c.is_system,l.line_type
   ), forecast_daily AS (
-    SELECT t.category_id,c.name AS category_name,to_char(t.occurred_on,'YYYY-MM-DD') AS date,
+    SELECT t.category_id,c.name AS category_name,c.is_system,to_char(t.occurred_on,'YYYY-MM-DD') AS date,
       CASE WHEN t.amount_cents < 0 THEN 'expense' ELSE 'income' END AS line_type,
       sum(abs(t.amount_cents))::text AS amount_cents
     FROM transactions t JOIN categories c ON c.id=t.category_id
     WHERE t.account_id=$1 AND t.status='posted' AND t.deleted_at IS NULL
-      AND t.transfer_id IS NULL AND NOT c.is_system
       AND t.occurred_on >= $2::date AND t.occurred_on < $2::date + interval '1 month'
       AND t.occurred_on <= $3::date
-    GROUP BY t.category_id,c.name,t.occurred_on,line_type
+    GROUP BY t.category_id,c.name,c.is_system,t.occurred_on,line_type
   ) SELECT
     COALESCE((SELECT json_agg(p ORDER BY p.line_type,p.category_name) FROM forecast_plans p),'[]') AS plans,
     COALESCE((SELECT json_agg(d ORDER BY d.date,d.category_name) FROM forecast_daily d),'[]') AS daily,
@@ -385,7 +384,7 @@ app.post('/api/v1/transfers', { preHandler: requireUser }, async (request, reply
     await client.query('BEGIN');
     const category = await client.query("SELECT id FROM categories WHERE user_id=$1 AND system_key='XFER_ACCOUNTS'", [request.user!.id]);
     const transfer = await client.query('INSERT INTO transfers (user_id,occurred_on,notes) VALUES ($1,$2,$3) RETURNING id', [request.user!.id,input.occurredOn,input.notes ?? null]);
-    await client.query("INSERT INTO transactions (user_id,account_id,occurred_on,amount_cents,description,category_id,transfer_id,notes) VALUES ($1,$2,$3,-$4,$5,$6,$7,$8),($1,$9,$3,$4,$5,$6,$7,$8)", [request.user!.id,input.sourceAccountId,input.occurredOn,input.amountCents,input.description,category.rows[0].id,transfer.rows[0].id,input.notes ?? null,input.destinationAccountId]);
+    await client.query("INSERT INTO transactions (user_id,account_id,occurred_on,amount_cents,description,category_id,transfer_id,notes) VALUES ($1,$2,$3,-$4::bigint,$5,$6,$7,$8),($1,$9,$3,$4::bigint,$5,$6,$7,$8)", [request.user!.id,input.sourceAccountId,input.occurredOn,input.amountCents,input.description,category.rows[0].id,transfer.rows[0].id,input.notes ?? null,input.destinationAccountId]);
     await client.query('COMMIT');
     return reply.code(201).send({ transferId: transfer.rows[0].id });
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }

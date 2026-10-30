@@ -113,6 +113,32 @@ describe("forecast calculations", () => {
       calculateForecast([sample({ daily: [], plans: [] })]).expenses.forecast,
     ).toBe(0);
   });
+  it("includes protected transfer categories as fixed, read-only forecast rows", () => {
+    const transfer = {
+      ...expense,
+      category_id: "xfer",
+      category_name: "Xfer Accounts",
+      is_system: true,
+    };
+    const result = calculateForecast([
+      sample({
+        methods: [],
+        plans: [{ ...transfer, amount_cents: "10000" }],
+        daily: [{ ...transfer, date: "2026-10-02", amount_cents: "4000" }],
+      }),
+    ]);
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        id: "xfer",
+        name: "Xfer Accounts",
+        isSystem: true,
+        method: "fixed",
+        plan: 10000,
+        actual: 4000,
+        forecast: 10000,
+      }),
+    ]);
+  });
   it("preserves the original route and validates forecast month routes", () => {
     expect(parseRoute("/accounts/all/budget")).toMatchObject({
       screen: "budget",

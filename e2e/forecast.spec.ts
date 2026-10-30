@@ -104,6 +104,28 @@ test("new forecast displays real plans, scenario, account/month routes and prese
   ).toBeVisible();
 });
 
+test("forecast includes Xfer Accounts but does not offer it a forecast method", async ({ page }) => {
+  const methodRequests: string[] = [];
+  page.on("request", request => {
+    if (request.url().includes("/forecast-methods/")) methodRequests.push(request.url());
+  });
+  await page.route("**/accounts/*/forecast?*", route => {
+    const result = report(new URL(route.request().url()).searchParams.get("month")!);
+    result.plans.push({ category_id: "xfer", category_name: "Xfer Accounts", is_system: true, line_type: "expense", amount_cents: "10000" });
+    result.daily.push({ category_id: "xfer", category_name: "Xfer Accounts", is_system: true, line_type: "expense", date: "2026-10-04", amount_cents: "4000" });
+    return route.fulfill({ json: result });
+  });
+  await page.goto(`/accounts/${checkingId}/forecast/2026-10`);
+  await expect(page.getByRole("region", { name: "Forecast spending", exact: true })).toContainText("$720.00");
+  const table = page.getByRole("table", { name: "Forecast categories" });
+  await expect(table.getByRole("row").filter({ hasText: "Xfer Accounts" })).toContainText("Transfer");
+  await expect(page.getByRole("textbox", { name: "Xfer Accounts forecast method", exact: true })).toHaveCount(0);
+  await page.getByRole("textbox", { name: "Account", exact: true }).click();
+  await page.getByRole("option", { name: "All accounts", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Forecast spending", exact: true })).toContainText("$1,440.00");
+  expect(methodRequests).toEqual([]);
+});
+
 test("forecast handles errors, retry, empty months, viewer access and responsive dark layout", async ({
   page,
 }) => {
