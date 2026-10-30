@@ -9,6 +9,8 @@ import {
 import { useRoute } from "./routing";
 import { Home, Settings } from "./screens";
 import { ForecastScreen } from "./ForecastScreen";
+import { BudgetComparison } from "./BudgetComparison";
+import { BudgetPeriodControl } from "./BudgetPeriodControl";
 import {
   ActionIcon,
   AppShell,
@@ -21,6 +23,7 @@ import {
   Container,
   Group,
   Loader,
+  Menu,
   Modal,
   MultiSelect,
   NavLink,
@@ -33,6 +36,7 @@ import {
   Stack,
   Switch,
   Table,
+  Tabs,
   Text,
   TextInput,
   Textarea,
@@ -47,6 +51,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconCopy,
+  IconDots,
   IconInfoCircle,
   IconLayoutDashboard,
   IconLogout,
@@ -1228,12 +1233,14 @@ type BudgetLine = {
   months: BudgetMonth[];
 };
 function Budget({
+  preview = false,
   account,
   scopeId,
   accounts,
   categories,
   onAccountChange,
 }: {
+  preview?: boolean;
   account: Account;
   scopeId: string;
   accounts: Account[];
@@ -1243,6 +1250,10 @@ function Budget({
   const currentYear = new Date().getFullYear();
   const currentMonth = new Date().getMonth() + 1;
   const [year, setYear] = useState(currentYear);
+  const [month, setMonth] = useState(currentMonth);
+  const [view, setView] = useState('month');
+  const [tab, setTab] = useState<string | null>('plan');
+  const [addOpen, setAddOpen] = useState(false);
   const budgetAccountId = scopeId;
   const [lines, setLines] = useState<BudgetLine[]>([]);
   const [actuals, setActuals] = useState<
@@ -1343,6 +1354,7 @@ function Budget({
       });
       setNewName("");
       setNewCategory(null);
+      setAddOpen(false);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -1855,7 +1867,7 @@ function Budget({
     </div>
   );
   return (
-    <Container size="xl" py="md">
+    <Container size="xl" py="md" className={preview ? 'budget-preview' : undefined}>
       <Stack gap="lg">
         <Group justify="space-between" align="end">
           <div>
@@ -1863,7 +1875,8 @@ function Budget({
               Budget /{" "}
               {budgetAccountId === "all" ? "All accounts" : account.name}
             </Text>
-            <Title order={1}>Budget</Title>
+            <Title order={1}>{preview ? 'Budget preview' : 'Budget'}</Title>
+            {preview && <Text size="sm" c="dimmed">A new layout for the same saved budget. Changes also appear in Budget.</Text>}
           </div>
           <Group>
             <Select
@@ -1898,7 +1911,40 @@ function Budget({
         {budgetNotice && <Text role="status" c="teal">{budgetNotice}</Text>}
         {loadingBudget && <Text role="status">Loading budget…</Text>}
         {error && <Group><Text role="alert" c="red">{error}</Text><Button variant="light" disabled={budgetBusy || loadingBudget} onClick={() => void runBudgetAction(load, true)}>Reload saved budget</Button></Group>}
-        <Card withBorder>
+        {preview && <>
+          {tab !== 'comparison' && <Card withBorder className="budget-preview-summary" component="section" aria-label="Plan summary">
+            <Text size="xs" fw={700} c="dimmed" mb="md">{view === 'month' ? new Date(year, month - 1).toLocaleString('en-US', { month: 'long' }).toUpperCase() : year} PLAN</Text>
+            <SimpleGrid cols={3}>
+              {(() => {
+                const total = (type: string) => lines.filter(line => line.line_type === type).reduce((sum, line) => sum + line.months.filter(item => view === 'year' || item.month === month).reduce((value, item) => value + Number(item.amount_cents), 0), 0);
+                const income = total('income'), expense = total('expense');
+                return [['Planned income', income], ['Planned expenses', expense], ['Planned remainder', income - expense]].map(([label, amount]) => <div key={label}>
+                  <Text c="dimmed" size="sm">{label}</Text><Text className="budget-preview-metric" c={label === 'Planned remainder' ? 'teal' : undefined}>{loadingBudget ? '—' : money(Number(amount))}</Text>
+                </div>);
+              })()}
+            </SimpleGrid>
+          </Card>}
+          <Tabs value={tab} onChange={setTab} color="teal">
+            <Tabs.List aria-label="Budget sections">
+              <Tabs.Tab value="plan">Budget plan</Tabs.Tab>
+              <Tabs.Tab value="comparison">Planned vs actual</Tabs.Tab>
+              <Tabs.Tab value="trends">Trends</Tabs.Tab>
+            </Tabs.List>
+          </Tabs>
+          <BudgetPeriodControl year={year} month={month} view={view} onMonth={setMonth} onView={setView} />
+          {tab === 'plan' && <>
+            <Group justify="space-between">
+              <Title order={2} size="h3">{view === 'month' ? new Date(year, month - 1).toLocaleString('en-US', { month: 'long', year: 'numeric' }) : `${year} plan`}</Title>
+              <Button color="teal" leftSection={<IconPlus size={16} />} disabled={budgetDisabled} onClick={() => setAddOpen(!addOpen)}>{addOpen ? 'Cancel new line' : 'Add budget line'}</Button>
+            </Group>
+            <Group justify="space-between">
+              <Text size="sm" c="dimmed">Click an amount to edit. Changes save automatically.</Text>
+              <Text size="sm" role="status" c={error ? 'red' : 'dimmed'}>{loadingBudget ? 'Loading…' : error ? 'Budget needs attention' : pendingSaves || budgetBusy ? 'Saving…' : 'All changes saved'}</Text>
+            </Group>
+            {!loadingBudget && !error && !lines.length && <Text c="dimmed">No budget lines yet. {canWriteBudget ? 'Add a line to start planning.' : 'No plan has been added for this year.'}</Text>}
+          </>}
+        </>}
+        {(!preview || (tab === 'plan' && addOpen)) && <Card withBorder>
           <Group align="end">
             <Select
               label="Line type"
@@ -1931,8 +1977,38 @@ function Budget({
             />
             <Button disabled={budgetDisabled} onClick={() => void runBudgetAction(addLine)}>Add line</Button>
           </Group>
-        </Card>
-        <Card
+        </Card>}
+        {preview && tab === 'plan' && view === 'month' && <Card withBorder p={0}>
+          <div className="budget-preview-table-scroll" role="region" aria-label="Monthly budget editor" tabIndex={0}>
+            <Table className="budget-preview-table" miw={560}>
+              <Table.Thead><Table.Tr><Table.Th>Budget line</Table.Th><Table.Th>Category</Table.Th><Table.Th ta="right">Planned</Table.Th><Table.Th ta="center">Entered</Table.Th><Table.Th><span className="budget-preview-sr-only">Actions</span></Table.Th></Table.Tr></Table.Thead>
+              <Table.Tbody>
+                {(['expense', 'income'] as const).map(type => <Fragment key={type}>
+                  <Table.Tr className="budget-preview-group"><Table.Td fw={700}>{type === 'expense' ? 'Expenses' : 'Income'}</Table.Td><Table.Td /><Table.Td ta="right" fw={700}>{money(lines.filter(line => line.line_type === type).reduce((sum, line) => sum + Number(line.months.find(item => item.month === month)?.amount_cents ?? 0), 0))}</Table.Td><Table.Td colSpan={2} /></Table.Tr>
+                  {lines.filter(line => line.line_type === type).map(line => {
+                    const entry = line.months.find(item => item.month === month);
+                    if (!entry) return null;
+                    return <Table.Tr key={line.id}>
+                      <Table.Td fw={500}>{line.name}<Text className="budget-preview-mobile-category" size="xs" c="dimmed">{line.category_name}</Text></Table.Td><Table.Td c="dimmed">{line.category_name}</Table.Td>
+                      <Table.Td><NumberInput className="budget-preview-amount" aria-label={`${line.name} month ${month} amount`} value={Number(entry.amount_cents) / 100} disabled={budgetDisabled} decimalScale={2} fixedDecimalScale hideControls prefix="$" onChange={value => changeMonth(line.id, month, value)} onBlur={() => void updateMonth(line, month, String(Number(entry.amount_cents) / 100), Boolean(entry.checked_at))} /></Table.Td>
+                      <Table.Td ta="center"><input type="checkbox" aria-label={`Mark ${line.name} month ${month} entered`} checked={Boolean(entry.checked_at)} disabled={budgetDisabled} onChange={event => {
+                        const checked = event.currentTarget.checked;
+                        setLines(current => current.map(item => item.id === line.id ? { ...item, months: item.months.map(value => value.month === month ? { ...value, checked_at: checked ? new Date().toISOString() : null } : value) } : item));
+                        void updateMonth(line, month, String(Number(entry.amount_cents) / 100), checked);
+                      }} /></Table.Td>
+                      <Table.Td><Menu position="bottom-end" withinPortal><Menu.Target><ActionIcon variant="subtle" color="gray" aria-label={`Actions for ${line.name}`} disabled={budgetDisabled}><IconDots size={18} /></ActionIcon></Menu.Target><Menu.Dropdown>
+                        <Menu.Item onClick={() => void runBudgetAction(async () => { await api(`/budget-lines/${line.id}/copy-january`, { method: 'POST' }); await load(); })}>Copy January to Feb–Dec</Menu.Item>
+                        <Menu.Item onClick={() => void runBudgetAction(() => replicate(line))}>Copy from current month ({monthNames[currentMonth - 1]})</Menu.Item>
+                        <Menu.Divider /><Menu.Item color="red" leftSection={<IconTrash size={16} />} onClick={() => setDeletingLine(line)}>Delete line</Menu.Item>
+                      </Menu.Dropdown></Menu></Table.Td>
+                    </Table.Tr>;
+                  })}
+                </Fragment>)}
+              </Table.Tbody>
+            </Table>
+          </div>
+        </Card>}
+        {(!preview || (tab === 'plan' && view === 'year')) && <Card
           withBorder
           p={0}
           className="budget-grid-scroll"
@@ -1967,13 +2043,14 @@ function Budget({
               {renderLines("income")}
             </Table.Tbody>
           </Table>
-        </Card>
-        <Card withBorder style={{ overflowX: "auto" }}>
+        </Card>}
+        {preview && tab === 'comparison' && <BudgetComparison year={year} month={month} view={view} loading={loadingBudget} error={Boolean(error)} categories={categories} lines={lines} actuals={actuals} />}
+        {!preview && <Card withBorder style={{ overflowX: "auto" }}>
           <Title order={3}>Planned vs Actual — {year}</Title>
           {renderPlannedActual("expense")}
           {renderPlannedActual("income")}
-        </Card>
-        <Card withBorder component="section" aria-label="Monthly budget comparison">
+        </Card>}
+        {(!preview || tab === 'trends') && <><Card withBorder component="section" aria-label="Monthly budget comparison">
           <Title order={3}>Planned vs Actual by Month</Title>
           <ResponsiveContainer width="100%" height={360}>
             <BarChart data={chartData}>
@@ -2052,6 +2129,7 @@ function Budget({
             </LineChart>
           </ResponsiveContainer>
         </Card>
+        </>}
         <Modal
           opened={copyYearOpen}
           onClose={() => { if (!budgetBusy) setCopyYearOpen(false); }}
@@ -2899,7 +2977,7 @@ export function App({
     return () => window.removeEventListener("beforeunload", warn);
   }, [bulkDirty]);
   const selected =
-    (route.screen === "budget" || route.screen === "forecast") && route.accountId === "all"
+    (route.screen === "budget" || route.screen === "budget-preview" || route.screen === "forecast") && route.accountId === "all"
       ? accounts[0]
       : accounts.find((a) => a.id === route.accountId);
   const fallback = selected ?? accounts.find((a) => a.is_active) ?? accounts[0];
@@ -3010,9 +3088,10 @@ export function App({
       );
     else if (route.screen === "forecast")
       content = <ForecastScreen key={`${route.accountId}/${route.month}`} accounts={accounts} scopeId={route.accountId!} month={route.month!} navigate={go} />;
-    else if (route.screen === "budget")
+    else if (route.screen === "budget" || route.screen === "budget-preview")
       content = (
         <Budget
+          preview={route.screen === 'budget-preview'}
           key={route.accountId}
           scopeId={route.accountId!}
           account={selected}
@@ -3101,6 +3180,7 @@ export function App({
           {nav("Reconcile", accountPath("reconcile"), <IconCheck size={18} />)}
           {nav("Xfer Funds", "/transfer", <IconArrowsLeftRight size={18} />)}
           {nav("Budget", accountPath("budget"), <IconReportMoney size={18} />)}
+          {nav("Budget preview", accountPath("budget-preview"), <IconReportMoney size={18} />)}
           {nav("Budget & forecast", accountPath(`forecast/${route.screen === 'forecast' ? route.month : new Date().toISOString().slice(0, 7)}`, route.screen === 'forecast' ? route.accountId : fallback?.id), <IconChartLine size={18} />)}
           {nav("Analysis", accountPath("analysis"), <IconChartBar size={18} />)}
           {nav("Settings", "/settings/general", <IconSettings size={18} />)}

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 export type AccountScreen =
-  "ledger" | "analysis" | "budget" | "forecast" | "reconcile" | "bulk";
+  "ledger" | "analysis" | "budget" | "budget-preview" | "forecast" | "reconcile" | "bulk";
 export type SettingsTab = "general" | "categories" | "accounts";
 export function parseRoute(path: string) {
   if (path === "/") return { screen: "home" as const };
@@ -17,7 +17,7 @@ export function parseRoute(path: string) {
       tab: (settings[1] || "general") as SettingsTab,
     };
   const account = path.match(
-    /^\/accounts\/([^/]+)\/(ledger|analysis|budget|reconcile|bulk)\/?$/,
+    /^\/accounts\/([^/]+)\/(ledger|analysis|budget|budget-preview|reconcile|bulk)\/?$/,
   );
   if (account)
     return { screen: account[2] as AccountScreen, accountId: account[1] };
